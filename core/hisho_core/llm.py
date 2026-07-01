@@ -1,6 +1,7 @@
 """ollama /api/chat(NDJSON) を消費し中立イベントに変換。thinking は表示/記録しない。"""
 from __future__ import annotations
 
+import httpx
 import json
 from typing import AsyncIterator
 
@@ -48,3 +49,52 @@ async def iter_ollama_events(raw_lines: AsyncIterator[bytes]) -> AsyncIterator[d
                 "eval_count": obj.get("eval_count")
             }
             return
+
+
+async def _as_bytes(aiter_str):
+    """
+    httpx.Response.aiter_lines() は str を返す（newline が削除されている）。
+    iter_ollama_events に渡す前に str → bytes 変換するアダプタ。
+    """
+    async for s in aiter_str:
+        yield (s + "\n").encode()
+
+
+async def chat_stream(messages, *, model, ollama_host, num_ctx, keep_alive,
+                      think: bool = False, client_factory=None):
+    """
+    Ollama /api/chat にストリーミング POST を送り、イベントを yield。
+
+    Args:
+        messages: chat messages list
+        model: ollama model name
+        ollama_host: ollama base URL (e.g. "http://127.0.0.1:11434")
+        num_ctx: context window size
+        keep_alive: keep alive duration (e.g. "30m")
+        think: enable thinking mode
+        client_factory: optional async client factory (default: httpx.AsyncClient with custom timeout)
+
+    Yields:
+        dict: events from iter_ollama_events (delta, done, error)
+    """
+    body = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "think": think,
+        "keep_alive": keep_alive,
+        "options": {"num_ctx": num_ctx},
+    }
+    factory = client_factory or (lambda: httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=None, write=5.0, pool=5.0)))
+    client = factory()
+    try:
+        async with client.stream("POST", f"{ollama_host}/api/chat", json=body) as resp:
+            if resp.status_code != 200:
+                text = (await resp.aread()).decode("utf-8", "replace")
+                yield {"type": "error", "message": f"ollama {resp.status_code}: {text[:200]}"}
+                return
+            async for evt in iter_ollama_events(_as_bytes(resp.aiter_lines())):
+                yield evt
+    finally:
+        await client.aclose()
