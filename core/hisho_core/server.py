@@ -180,4 +180,12 @@ def create_app(
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    @app.get("/history")
+    async def history(session_id: str | None = None):
+        """セッション一覧またはセッション内ターン一覧を取得(読み取り専用)。"""
+        store = app.state.store
+        if session_id is None:
+            return {"sessions": store.list_sessions(100)}
+        return {"session_id": session_id, "turns": store.recent_turns(session_id, 500)}
+
     return app

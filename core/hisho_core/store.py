@@ -105,3 +105,9 @@ class Store:
     def touch_session(self, session_id: str, now_ms: int) -> None:
         self.conn.execute("UPDATE sessions SET last_activity=? WHERE id=?", (now_ms, session_id))
         self.conn.commit()
+
+    def list_sessions(self, limit: int) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT id, title, last_activity FROM sessions WHERE status != 'deleted' "
+            "ORDER BY last_activity DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
