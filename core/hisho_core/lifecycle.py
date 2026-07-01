@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import sys
 import threading
 from pathlib import Path
+
+logger = logging.getLogger("hisho")
 
 
 def core_json_path(config_db_path: str) -> str:
@@ -20,15 +23,18 @@ def write_core_json(path: str, pid: int, port: int) -> None:
 
 
 def read_core_json(path: str) -> dict | None:
-    """core.json を読み込む。ファイルなし・JSON不正なら None を返す。"""
+    """core.json を読み込む。ファイルなし・JSON不正・非dictなら None を返す。"""
     try:
-        return json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text())
+        return data if isinstance(data, dict) else None
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
 
 def _pid_alive(pid: int) -> bool:
     """プロセスが生存しているか確認。"""
+    if pid <= 0:
+        return False
     try:
         os.kill(pid, 0)
         return True
@@ -52,6 +58,7 @@ def is_our_stale_core(info: dict) -> bool:
         ) as r:
             return json.loads(r.read()).get("core") is True
     except Exception:
+        logger.debug("stale-core probe failed", exc_info=True)
         return False
 
 

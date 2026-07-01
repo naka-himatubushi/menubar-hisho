@@ -49,6 +49,7 @@ class Store:
         c.execute("PRAGMA foreign_keys = ON")
         c.execute("PRAGMA busy_timeout = 5000")
         c.execute("PRAGMA synchronous = NORMAL")
+        c.execute("PRAGMA wal_autocheckpoint = 1000")
         c.executescript(_SCHEMA_V1)
         if self.user_version() < 1:
             c.execute("PRAGMA user_version = 1")

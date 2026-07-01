@@ -1,7 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
 Contents/Resources/core/
 build/
 .DS_Store
 secretary.db*
+.superpowers/

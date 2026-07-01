@@ -60,7 +60,7 @@ async def _default_probe(config: Config) -> dict:
             )
             out["model_loaded"] = config.chat_model in loaded
     except Exception:
-        pass
+        logger.debug("ollama probe failed", exc_info=True)
     return out
 
 
@@ -125,7 +125,9 @@ def create_app(
         model = body.get("model") or cfg.chat_model
         session_id = body.get("session_id") or f"sess-{uuid.uuid4().hex[:12]}"
         msgs_in = body.get("messages", [])
-        user_message = msgs_in[-1]["content"] if msgs_in else ""
+        user_message = (msgs_in[-1].get("content") or "") if msgs_in else ""
+        if not isinstance(user_message, str):
+            user_message = str(user_message)
 
         now = _now_ms()
         async with app.state.write_lock:
@@ -173,9 +175,10 @@ def create_app(
                 except Exception:
                     logger.warning("failed to send error frame to client", exc_info=True)
             finally:
-                async with app.state.write_lock:
-                    await anyio.to_thread.run_sync(store.finalize_turn, assistant_id, "".join(acc), None, status, _now_ms())
-                    await anyio.to_thread.run_sync(store.touch_session, session_id, _now_ms())
+                with anyio.CancelScope(shield=True):
+                    async with app.state.write_lock:
+                        await anyio.to_thread.run_sync(store.finalize_turn, assistant_id, "".join(acc), None, status, _now_ms())
+                        await anyio.to_thread.run_sync(store.touch_session, session_id, _now_ms())
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -185,7 +188,7 @@ def create_app(
         """セッション一覧またはセッション内ターン一覧を取得(読み取り専用)。"""
         store = app.state.store
         if session_id is None:
-            return {"sessions": store.list_sessions(100)}
-        return {"session_id": session_id, "turns": store.recent_turns(session_id, 500)}
+            return {"sessions": await anyio.to_thread.run_sync(store.list_sessions, 100)}
+        return {"session_id": session_id, "turns": await anyio.to_thread.run_sync(store.recent_turns, session_id, 500)}
 
     return app

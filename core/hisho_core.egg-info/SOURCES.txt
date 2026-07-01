@@ -1,9 +1,0 @@
-pyproject.toml
-hisho_core/__init__.py
-hisho_core/config.py
-hisho_core.egg-info/PKG-INFO
-hisho_core.egg-info/SOURCES.txt
-hisho_core.egg-info/dependency_links.txt
-hisho_core.egg-info/requires.txt
-hisho_core.egg-info/top_level.txt
-tests/test_config.py
