@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+Contents/Resources/core/
+build/
+.DS_Store
+secretary.db*
