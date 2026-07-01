@@ -22,6 +22,108 @@
 - `X-Hisho-Source: popover` の時だけ秘書挙動(persona+履歴)をサーバ側合成。無い時は passthrough で `source='external'` 記録。
 - タイムスタンプは INTEGER unix-epoch-millis(UTC)。
 - 成果物に実名を書かない(persona は「ユーザー専属の秘書」等)。
+- `anyio` は fastapi/starlette の推移依存として利用可(明示追加不要)。writer 直列化に使う。
+
+---
+
+## 🔴 Codex レビュー反映 — 実装前の必須修正 (2026-07-02, gpt-5.5)
+
+**判定: 保留 → 下記 C1–C5 を適用して着手可。** これは各タスクの要件に暗黙で含む。
+
+### C1 (Critical, Task9): CancelledError と status の既定値
+
+`asyncio.CancelledError` は `BaseException` 派生 → `except Exception` では捕捉されない。切断が generator に届く保証も ASGI 経路依存。よって **status 既定を 'partial'、正常完走時のみ 'complete'**。Task9 の `gen()` はこの版を使う:
+
+```python
+async def gen():
+    import asyncio
+    acc: list[str] = []
+    status = "partial"          # 既定 partial。正常完走で complete に昇格
+    finish = "stop"
+    try:
+        yield sse(chunk(cid, model, _now_ms() // 1000, delta={"role": "assistant"}, finish_reason=None))
+        async for evt in app.state.chat_fn(messages, model=model, ollama_host=cfg.ollama_host,
+                                           num_ctx=cfg.num_ctx, keep_alive=cfg.keep_alive, think=False):
+            if evt["type"] == "delta":
+                acc.append(evt["content"])
+                yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": evt["content"]}, finish_reason=None))
+            elif evt["type"] == "error":
+                status = "error"
+                yield sse(error_frame(evt["message"]))
+                return
+            elif evt["type"] == "done":
+                finish = evt.get("finish_reason", "stop")
+        yield sse(chunk(cid, model, _now_ms() // 1000, delta={}, finish_reason=finish))
+        yield DONE
+        status = "complete"                 # ここまで到達=成功
+    except asyncio.CancelledError:          # 切断: BaseException 派生。status は partial のまま
+        raise                               # 必ず再 raise
+    except Exception as ex:
+        status = "error"
+        try: yield sse(error_frame(str(ex)))
+        except Exception: pass
+    finally:
+        async with app.state.write_lock:
+            await anyio.to_thread.run_sync(store.finalize_turn, assistant_id, "".join(acc), None, status, _now_ms())
+            await anyio.to_thread.run_sync(store.touch_session, session_id, _now_ms())
+```
+
+Task9 元コードの注釈「クライアント切断は CancelledError(Exception派生)」は**削除**(誤り)。切断の partial 記録は ASGITransport では再現しにくい → **実 uvicorn + curl 中断テストを SMOKE.md(Task12)に追加**。
+
+### C2 (High, Task2/3/9): SQLite 並行安全
+
+単一 `sqlite3.Connection` を async ハンドラから同期呼び=event loop ブロック + `next_seq`→INSERT 競合。WAL/busy_timeout は file lock 対策で別問題。修正:
+
+- `create_app` 冒頭に `import asyncio, anyio` → `app.state.write_lock = asyncio.Lock()`。
+- Task9 の **全 store 変更呼び出し**を `async with app.state.write_lock: await anyio.to_thread.run_sync(store.METHOD, ...)` で包む(user 記録・placeholder・finalize・touch)。
+- seq 採番は別 SELECT を廃し **INSERT 文内でアトミック**に(Task3 の 2 メソッドを差し替え):
+
+```python
+def append_user_turn(self, session_id, content, now_ms, source):
+    import json
+    cur = self.conn.execute(
+        "INSERT INTO turns(session_id, seq, role, content, status, created_at, completed_at, meta) "
+        "VALUES(?, (SELECT COALESCE(MAX(seq),0)+1 FROM turns WHERE session_id=?), 'user', ?, 'complete', ?, ?, ?)",
+        (session_id, session_id, content, now_ms, now_ms, json.dumps({"source": source})))
+    self.conn.commit()
+    return cur.lastrowid
+
+def add_assistant_placeholder(self, session_id, model, now_ms):
+    cur = self.conn.execute(
+        "INSERT INTO turns(session_id, seq, role, content, status, model, created_at) "
+        "VALUES(?, (SELECT COALESCE(MAX(seq),0)+1 FROM turns WHERE session_id=?), 'assistant', '', 'streaming', ?, ?)",
+        (session_id, session_id, model, now_ms))
+    self.conn.commit()
+    return cur.lastrowid
+```
+
+`next_seq()` は読み取りヘルパとして残す(Task3 テストが参照)。
+
+### C3 (Medium, Task7): httpx aiter_lines
+
+`aiter_lines_bytes()` は存在しない。`aiter_lines()` は改行なしの `str`。**脚注修正をやめ本体を正しく**:
+
+```python
+async def _as_bytes(aiter_str):
+    async for s in aiter_str:
+        yield (s + "\n").encode()
+# chat_stream 内(200 分岐の中):
+async for evt in iter_ollama_events(_as_bytes(resp.aiter_lines())):
+    yield evt
+```
+
+### C4 (Medium, Task5/9): error frame を OpenAI 形へ
+
+```python
+def error_frame(message: str) -> dict:
+    return {"error": {"message": message, "type": "hisho_error", "param": None, "code": None}}
+```
+
+Task5 の `test_error_frame` 期待値も `param`/`code` を含める。first-byte 前の失敗を HTTP 502 + OpenAI error JSON にするのは将来改良(MVP は streaming 内 error frame で可、SMOKE で Chatbox 実挙動確認)。
+
+### C5 (Low, Task6): done_reason 欠落テスト
+
+`iter_ollama_events` に `{"done": true, "eval_count": 5}`(done_reason 無し)→ finish_reason='stop' のケースを `test_llm_parser.py` に追加。
 
 ---
 
