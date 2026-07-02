@@ -26,6 +26,16 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+_FORGET_TAIL = re.compile(r"(のこと|について|の情報|に関する|を|は|が|も|、|。|\s)+$")
+
+
+def _forget_query(user_message: str) -> str:
+    """決定的フォールバック用に user 発話から忘却対象語を抽出する。
+    例: 「ハムスターのこと忘れて」→「ハムスター」。抽出できなければ全文を返す。"""
+    head = re.split(r"忘れ|消し|消去|削除|覚えなくて", user_message)[0]
+    return _FORGET_TAIL.sub("", head).strip() or user_message
+
+
 async def _default_probe(config: Config) -> dict:
     """Ollama に /api/version, /api/tags, /api/ps を叩いて健康状態を取得。例外時は reachable=False。"""
     import httpx
@@ -130,7 +140,9 @@ def create_app(
     app.state._probe_cache = {"t": 0.0, "v": None}
     app.state.write_lock = asyncio.Lock()
     app.state.tool_registry = tools_module.REGISTRY
-    app.state.forget_intent = re.compile(r"忘れ|消し|消して|覚えなくて|削除")
+    # imperative 形に限定して否定 (「忘れないで」「消さないで」) を除外。
+    # フォールバックが誤って削除しないための一次ゲート。
+    app.state.forget_intent = re.compile(r"忘れて|消して|消去|削除|覚えなくて")
     app.state.warmup_fn = warmup_fn or (lambda: llm.warmup(
         model=config.chat_model, ollama_host=config.ollama_host,
         num_ctx=config.num_ctx, keep_alive=config.keep_alive))
@@ -186,9 +198,13 @@ def create_app(
             await anyio.to_thread.run_sync(store.get_or_create_session, session_id, now)
             user_turn_id = await anyio.to_thread.run_sync(store.append_user_turn, session_id, user_message, now, source)
 
+        is_forget = source == "popover" and bool(app.state.forget_intent.search(user_message))
         if source == "popover":
-            memories = await rag.retrieve(store, user_message, config=cfg,
-                                          exclude_session_id=session_id)
+            # 忘却要求ターンは過去メモを注入しない: 削除対象の事実が context に居ると
+            # モデルが forget ツールを呼ばず「消しました」と幻覚する (実測: qwen3.6)。
+            # ツールは DB を自前検索するので context のメモは不要。
+            memories = [] if is_forget else await rag.retrieve(
+                store, user_message, config=cfg, exclude_session_id=session_id)
             recent = await anyio.to_thread.run_sync(store.recent_turns, session_id, cfg.history_replay_turns)
             recent_wo_last = recent[:-1] if recent and recent[-1]["role"] == "user" else recent
             messages = context.build_messages(recent_wo_last, user_message,
@@ -197,10 +213,7 @@ def create_app(
         else:
             messages = msgs_in
 
-        use_tools = (
-            tools_module.TOOL_SPECS
-            if source == "popover" and app.state.forget_intent.search(user_message)
-            else None)
+        use_tools = tools_module.TOOL_SPECS if is_forget else None
 
         async with app.state.write_lock:
             assistant_id = await anyio.to_thread.run_sync(store.add_assistant_placeholder, session_id, model, _now_ms(), source)
@@ -281,6 +294,24 @@ def create_app(
                         {"role": "tool", "content": json.dumps(result, ensure_ascii=False)},
                     ]
                     tools_for_round = None  # 2周目以降はツール無し (無限ループ防止の一助)
+                # 決定的フォールバック (安全性の要): 明示的忘却意図なのにモデルが forget を
+                # 呼ばなかった場合 (qwen3.6 は memories 無しでも ~25% 幻覚で素通りする) →
+                # サーバが確実に forget を実行し、「消した」という嘘が実削除なしで通るのを防ぐ。
+                if use_tools and not tool_used_forget:
+                    tool_used_forget = True   # H1: この往復も索引しない (試行した)
+                    try:
+                        fb = await app.state.tool_registry["forget_memories"](
+                            {"query": _forget_query(user_message)},
+                            store=store, config=cfg, write_lock=app.state.write_lock)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.warning("fallback forget failed", exc_info=True)
+                        fb = None
+                    if isinstance(fb, dict) and "error" not in fb:
+                        forget_fired = True
+                        forget_count = fb.get("count", 0)
+                        forget_result = fb
                 if finish == "tool_calls":
                     # ループが tool_call のまま終了した (MAX_TOOL_ITERS 到達 or 未知ツールで break) →
                     # クライアントには非ツールの終端理由を返す (H-Task5-1)

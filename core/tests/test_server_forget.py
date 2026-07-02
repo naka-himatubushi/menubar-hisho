@@ -51,6 +51,43 @@ def test_external_source_never_gets_tools_even_with_keyword(tmp_path):
     assert calls["tools_seen"][0] is None  # external → 忘却語があっても tools なし
 
 
+def test_deterministic_fallback_forgets_when_model_hallucinates(tmp_path):
+    """安全性の要: モデルが tool を呼ばず「消しました」と幻覚しても、サーバが決定的に
+    forget を実行する (実測: qwen3.6 は memories 無しでも ~25% 幻覚し素通りする)。"""
+    store = Store(str(tmp_path / "t.db"))
+    # モデルは tool_call を出さず content だけ返す (= 幻覚。実削除しないのに「消した」)
+    chat_fn, calls = _make_chat_fn([[{"type": "delta", "content": "削除しました。件数は0件です。"},
+                                     {"type": "done", "finish_reason": "stop"}]])
+    app = create_app(store, load_config(), chat_fn=chat_fn,
+                     probe_fn=lambda: _ok_probe(), warmup_fn=_true, unload_fn=_true)
+    called = {"q": None}
+
+    async def fake_forget(args, **kw):
+        called["q"] = args.get("query")
+        return {"count": 1, "matched": 1, "truncated": False, "items": ["ハムスターのハム太"]}
+
+    app.state.tool_registry = {"forget_memories": fake_forget}
+    with TestClient(app) as c:
+        r = c.post("/v1/chat/completions", json={"session_id": "fb", "messages": [{"role": "user", "content": "ハムスターのこと忘れて"}]},
+                   headers={"X-Hisho-Source": "popover"})
+        body = _sse_text(r.content)
+    assert called["q"] == "ハムスター"          # フォールバックが query を抽出して forget を実行
+    assert "[記憶を 1件 忘れました]" in body      # 決定的報告 = モデルの幻覚「0件」でなく実際の1件
+
+
+def test_negation_does_not_trigger_forget(tmp_path):
+    """「忘れないで」(否定) は imperative ゲートに掛からず tools を渡さない = 誤削除しない。"""
+    store = Store(str(tmp_path / "t.db"))
+    chat_fn, calls = _make_chat_fn([[{"type": "delta", "content": "承知しました"}, {"type": "done", "finish_reason": "stop"}]])
+    app = create_app(store, load_config(), chat_fn=chat_fn,
+                     probe_fn=lambda: _ok_probe(), warmup_fn=_true, unload_fn=_true)
+    with TestClient(app) as c:
+        r = c.post("/v1/chat/completions", json={"session_id": "neg", "messages": [{"role": "user", "content": "この予定は忘れないで"}]},
+                   headers={"X-Hisho-Source": "popover"})
+        assert r.status_code == 200
+    assert calls["tools_seen"][0] is None  # 「忘れないで」→ tools なし (誤削除防止)
+
+
 def test_forget_keyword_runs_tool_and_appends_deterministic_line(tmp_path):
     # fake_forget を注入するので RAG 依存なし → rag_enabled ガードは不要 (M3 assert を常に走らせる)
     store = Store(str(tmp_path / "t.db"))
