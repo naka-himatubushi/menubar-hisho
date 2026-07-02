@@ -1160,8 +1160,10 @@ func tempDir() throws -> URL {
         mgr.start()
         #expect(await eventually { mgr.state == .ready })
         kill(mgr.childPIDForTesting!, SIGKILL)
+        // 検知経路は 2 本(terminationHandler=「予期せず終了」/ tick の reducer=「core プロセスが終了」)。
+        // どちらが先かはレースなので、文言でなく「停止済(=意図的 stop)以外の coreStopped」を期待する。
         #expect(await eventually {
-            if case .coreStopped(let r) = mgr.state { return r.contains("予期せず") }
+            if case .coreStopped(let r) = mgr.state { return r != "停止済" }
             return false
         })
     }
