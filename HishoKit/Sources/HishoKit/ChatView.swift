@@ -111,7 +111,9 @@ public struct ChatView: View {
     }
 
     private var canSend: Bool {
-        core.state == .ready && !chat.isStreaming
+        // warmingModel でも送れる: ollama はリクエストで自動再ロードするため(初回だけ遅い)。
+        // 30 分アイドルで unload された後もアプリ再起動なしで会話を再開できる。
+        (core.state == .ready || core.state == .warmingModel) && !chat.isStreaming
     }
 
     private var sendEnabled: Bool {
@@ -138,7 +140,7 @@ struct StatusBanner: View {
         case .startingCore:
             banner("秘書を起動中…", tint: .secondary)
         case .warmingModel:
-            banner("モデルを準備中…(初回は数十秒かかります)", tint: .secondary)
+            banner("モデルを準備中…(送信できます。最初の返事だけ遅めです)", tint: .secondary)
         case .ollamaDown:
             banner("ollama に接続できません — `ollama serve` を確認", tint: .orange)
         case .coreStopped(let reason):
