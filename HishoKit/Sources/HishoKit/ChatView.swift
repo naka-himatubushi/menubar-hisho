@@ -173,7 +173,7 @@ struct MessageRow: View {
         HStack {
             if message.role == .user { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 4) {
-                Text(displayText)
+                Text(inlineMarkdown(displayText))
                     .textSelection(.enabled)
                 if case .error(let reason) = message.status {
                     Text("⚠️ \(reason)").font(.caption2).foregroundStyle(.red)
@@ -187,6 +187,15 @@ struct MessageRow: View {
                                                 : Color.gray.opacity(0.12)))
             if message.role == .assistant { Spacer(minLength: 48) }
         }
+    }
+
+    /// persona は平文出力を指示しているが、モデルが Markdown 記号を混ぜた時の保険として
+    /// インライン要素 (**太字**・`等幅`) だけ描画に変換する。ブロック要素は平文のまま。
+    private func inlineMarkdown(_ text: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
     }
 
     /// streaming 中は末尾にカーソル ▍ を出す(空なら ▍ のみ)。
