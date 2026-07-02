@@ -1,87 +1,60 @@
-# Hisho — セッション引き継ぎ (2026-07-01)
+# Hisho (JARVIS) — セッション引き継ぎ (2026-07-02 終業時点)
 
-> 次セッションで**そのまま再開**するための地図。詳細は spec/plan/ledger を参照。
+> 次セッションで**そのまま再開**するための地図。詳細は spec / plans / メモリを参照。
 
-## 現在地 (2026-07-02 更新2)
+## 現在地
 
-- **Plan 3 (RAG 長期記憶) = 完成・main マージ済 (120a31f)**。sqlite-vec v2 スキーマ + bge-m3 (ollama /api/embed) + popover 経路への記憶注入 + fire-and-forget 索引 + 起動時 backfill。56 py tests + 26 swift tests。
-- E2E 実測: 別セッションから「猫の名前=モチ」想起成功 / external 非汚染 / egress ゼロ。plan: `docs/superpowers/plans/2026-07-02-hisho-rag-memory.md`
-- RAG 落とし穴: 索引対象は popover の complete ターン (10 文字以上) のみ。`HISHO_RAG=0` で無効化可。vec0 孤児 rowid はスレ削除時に残る (rebuild で掃除 — 運用課題)。
+- ブランチ **main** / working tree clean / **Python 62 tests + Swift 26 tests green**
+- **Plan 1 (Python core) + Plan 2 (Swift 殻 + .app) + Plan 3 (RAG 長期記憶) = 全部完成・マージ済**
+- GitHub 公開済 (public, MIT)。全履歴 author は中立名義にクリーニング済 — **今後も実名・内部 IP・ホスト名をコミットしない**
+- アプリは JARVIS ブランド (髭アイコン) でメニューバー常駐稼働中。persona 個人化 + プロフィール/インフラ知識の種まき + バックアップ状況の定期収集 (launchd 毎日 9:00) まで運用中
 
-## 旧: Plan 2 時点の現在地
+## できていること (完成機能)
 
-- ブランチ **feature/plan2-swift-shell** / **Plan 2 実装完了・E2E 自動チェック済 / main 未マージ**。
-- Python 41 tests + Swift 26 tests green。実 .app でチャット往復・relocation・kill -9 親→core 自死・egress ゼロ確認済。
-- plan: `docs/superpowers/plans/2026-07-02-hisho-swift-shell.md`(Codex レビュー 12 件反映済)
-- **残り**: ユーザー目視(MenuBarExtra focus 3点 + UI 見た目)→ NG なら HishoApp/Sources/HishoApp.swift を Variant B(plan Task 10 Step 4)へ差替 → main マージ。
-- 実測の落とし穴: `swift test`/`xcodebuild` は `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` 前置必須 / core 単体 background 起動は `tail -f /dev/null |` 前置(stdin EOF 自死) / core 変更後は `scripts/build_core.sh` 再実行してから .app リビルド。
+1. チャット (MenuBarExtra popover、SSE 逐次描画、popover 破棄耐性、平文出力)
+2. 長期記憶 RAG (sqlite-vec + bge-m3): 別セッション想起・external 非汚染・status 現況優先・質問の自己エコー除外
+3. 秘書知識: プロフィール/プロジェクト/接続手順を種まき済 (`scripts/seed_memory.py` で追加可)
+4. バックアップ監視 (方式①): launchd 収集 → 記憶上書き → 「バックアップ大丈夫?」に機器別実測日時で回答。異常は先頭で警告・断定しない
+5. 自動アンロード対応 (30 分アイドル → 次の発話で自動再ロード、warming 中も送信可)
 
-## 何ができたか (Plan 1)
+## 次の候補 (未着手)
 
-`hisho_core` = ローカル ollama の前に立つ「秘書レイヤ」サーバ。**単体で完動**（Swift 殻なしでも使える）。
+- **Plan 4 (本命): sensors + tool calling** — 「今すぐ確認して」でその場で実行 + 未実行ならバックアップ起動を JARVIS が実行。設計メモはメモリ側 (project_menubar_hisho / user_backup_infra)
+- UI 磨き / `/history` 画面 / 新規会話ボタン / SMAppService (ログイン起動) / ruri との検索精度比較
 
-- API: `POST /v1/chat/completions`(OpenAI 互換 SSE。`X-Hisho-Source: popover` で persona+履歴をサーバ側合成、無ければ外部ツール素通し)、`GET /healthz`(2段階 readiness)、`GET /v1/models`、`GET /history`。
-- 記録: 全ターンを SQLite(WAL, `~/Library/Application Support/Hisho/secretary.db`)。RAG 拡張の seam 済(chunks/embeddings は追加テーブルで無痛)。
-- モジュール: `config / store / context / sse / llm / server / lifecycle / __main__`(各 role docstring 付き)。
-- モデル: `qwen3.6:35b-a3b`(llm.py/config.py の単一設定値)。
-
-## 次にやること (Plan 2 — Swift 殻 + packaging)
-
-spec `docs/specs/2026-07-01-hisho-chat-mvp-design.md` の §3-5, §11, §14 が設計元。
-
-1. **SwiftUI MenuBarExtra** の薄殻(アイコン→popover: 会話ログ逐次描画 + 入力)。stream はアプリ層 store で保持(popover 破棄で切れない)。状態: starting core / warming model / ready / ollama-down / core-stopped。
-2. **子プロセス供給**: 殻が同梱 `hisho_core` を child で起動/監視/終了。**stdin を Pipe で保持**(親死→EOF→core 自死。lifecycle.py 実装済の watcher が受ける)。健康は `/healthz` ポーリング。
-3. **同梱 Python**: uv 管理 **python-build-standalone CPython 3.13** を `Contents/Resources/core/` に丸ごとコピー(symlink venv 不可)。deps を直接 install。
-4. **ビルド/署名**: **Xcode あり** → .app/Info.plist(`LSUIElement`, `NSAllowsLocalNetworking`)/署名/`SMAppService`/entitlements を Xcode に任せる。**Sandbox OFF・Hardened Runtime OFF・notarize なし**(自機ローカル)。notarize-ready の道は spec §5 に文書化のみ。
-5. **macOS 26 focus スパイク(着手前 30分)**: MenuBarExtra `.window` の TextField focus を実機確認。ダメなら AppKit `NSStatusItem`+`NSPopover` へ退避(chat view は host-agnostic に)。
-6. bundle relocation smoke(.app を移動して core が動く)。
-
-## 再開手順(コマンド)
+## 再開手順
 
 ```bash
 cd ~/sandbox/menubar-hisho
-# テスト
-core/.venv/bin/python -m pytest core/tests/ -q        # 35 passed 期待
-# core を単体起動(ollama 稼働前提)
-core/.venv/bin/python -m hisho_core                    # 127.0.0.1:51100
-# 実機スモーク手順は core/SMOKE.md(chat/history/外部ツール互換/親死自死/切断partial)
+core/.venv/bin/python -m pytest core/tests/ -q                      # 62 passed
+cd HishoKit && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test  # 26 tests
+# アプリ再ビルド (core を変えた時):
+scripts/build_core.sh && cd HishoApp && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodegen generate && cd .. \
+  && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project HishoApp/HishoApp.xcodeproj -scheme HishoApp -configuration Debug -derivedDataPath build/derived build \
+  && open build/derived/Build/Products/Debug/Hisho.app
 ```
-venv が壊れてたら: `cd core && /opt/homebrew/bin/python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`
 
-## 引き継ぐ重要決定・落とし穴
+## 落とし穴 (実測済・忘れると再度ハマる)
 
-- **エンジンは ollama 据え置き**(llama.cpp に乗り換えない)。「4MB tiny」は諦め(同梱 CPython で ~90MB)。
-- **127.0.0.1 のみ bind**(0.0.0.0 禁止)。データは Mac の外に出さない(テレメトリ無し)。
-- **推論モデル**: 既定 `think:false`。`<think>` を表示にもログにも**絶対に連結しない**。
-- **num_ctx を毎回明示**(既定 8192)。既定 4096 だと古い=persona から捨てられ秘書が指示を忘れる。
-- **記録の finally は `anyio.CancelScope(shield=True)` で保護**(client 切断時に lock 待ちで partial 書き漏れる Opus 指摘 F1 の対策)。cancel→partial は決定的テスト(`body_iterator.aclose()`)で担保。
-- ポート **51100**(ollama 11434 と離す)。衝突時 reclaim→`:0` fallback→core.json 実ポート。
-- SQLite 書き込みは `asyncio.Lock` + `anyio.to_thread` 直列化、stream 中は lock 非保持。seq は INSERT 内アトミック。
+- `swift test` / `xcodebuild` / `xcodegen` は **DEVELOPER_DIR 前置必須** (xcode-select が CLT のため)
+- **core を変更したら `scripts/build_core.sh` 再実行**してから .app リビルド (古いツリーを embed する事故を 1 回やった)
+- core 単体を background 起動する時は `tail -f /dev/null |` 前置 (stdin 即 EOF → 自死)
+- RAG 教訓: 質問文は索引しない / 現況は status チャンクに一元化 (静的メモに状態を書かない) / 知識に検索枠保証
+- 収集系の個人設定は repo 外 (`~/Library/Application Support/Hisho/backup_targets.json`)
 
-## 開発ポリシー(この repo で固定)
+## 開発ポリシー (この repo で固定)
 
-- **plan=Opus / 実装=Sonnet・Haiku サブエージェント / サブエージェントは commit しない**(controller がレビュー後コミット)。
-- 設計段階で **codex-review**(gpt-5.5)。SDD: タスク毎 実装→個別レビュー→修正、最後に全ブランチレビュー(最上位モデル)。
-- README/公開物に**実名を出さない**(筆者/開発者表記)。
-- UI 色/font/motion は**実機/ブラウザで確認**してから確定。
-
-## 受容済みの負債 / follow-up
-
-- **2プロセス reconciliation 未配線**(Opus #5): `python -m hisho_core` を手で2重起動すると別ポートで同じ DB を共有し seq 衝突しうる。MVP では SO_REUSEADDR で安全に `:0` fallback。**Plan 2 の Swift supervisor が唯一起動を保証**する前提。`lifecycle.is_our_stale_core` は名前が実態(=生存判定)とズレ(リネーム候補)。
-- `wal_autocheckpoint` は既定と同値だが明示済。
-
-## 別スレ(停止中)
-
-- **skillup 伴走開発**: 選定済プロジェクト=③「ベクトル検索エンジン自作(FAISS/Chroma の中身)」。伴走スタイル=**Sonnet 段階実装→開発者が全行理解(予測/説明/破壊)**。menubar とは別物として分離。ショートリスト全8案は当セッション workflow 出力にあり(必要なら再生成)。
+- plan=Opus / 実装=Sonnet サブエージェント (commit 禁止、controller がレビュー後コミット) / 設計段階で codex-review
+- **セッション運用: フェーズごとに本ファイルを更新して /clear。日常モデルは Opus 4.8、Fable は設計/難障害/最終レビューの日のみ**
+- 公開物に実名を書かない。UI の色/font は実機確認してから確定
 
 ## ファイル地図
 
 ```
-docs/specs/2026-07-01-hisho-chat-mvp-design.md     # 設計仕様(15節・硬化済)
-docs/superpowers/plans/2026-07-01-hisho-python-core.md  # Plan 1(C1-C5 addendum 含む)
-docs/HANDOFF.md                                    # これ
-core/pyproject.toml  core/SMOKE.md
-core/hisho_core/{config,store,context,sse,llm,server,lifecycle,__main__}.py
-core/tests/test_*.py                               # 35 tests
-.superpowers/sdd/progress.md                       # SDD ledger(gitignore・ローカルのみ)
+docs/specs/2026-07-01-hisho-chat-mvp-design.md      # 設計仕様 (15節)
+docs/superpowers/plans/2026-07-01-hisho-python-core.md   # Plan 1
+docs/superpowers/plans/2026-07-02-hisho-swift-shell.md   # Plan 2
+docs/superpowers/plans/2026-07-02-hisho-rag-memory.md    # Plan 3
+core/hisho_core/{config,store,context,sse,llm,server,lifecycle,rag,__main__}.py
+HishoKit/  HishoApp/  scripts/  core/SMOKE.md
 ```
