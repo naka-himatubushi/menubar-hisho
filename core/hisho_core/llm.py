@@ -98,3 +98,39 @@ async def chat_stream(messages, *, model, ollama_host, num_ctx, keep_alive,
                 yield evt
     finally:
         await client.aclose()
+
+
+async def warmup(*, model, ollama_host, num_ctx, keep_alive, client_factory=None) -> bool:
+    """1トークン生成でモデルを VRAM にロードし cold start を隠す。失敗は False(例外を上げない)。"""
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "stream": False,
+        "think": False,
+        "keep_alive": keep_alive,
+        "options": {"num_ctx": num_ctx, "num_predict": 1},
+    }
+    factory = client_factory or (lambda: httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=None, write=5.0, pool=5.0)))
+    client = factory()
+    try:
+        r = await client.post(f"{ollama_host}/api/chat", json=body)
+        return r.status_code == 200
+    except httpx.HTTPError:
+        return False
+    finally:
+        await client.aclose()
+
+
+async def unload(*, model, ollama_host, client_factory=None) -> bool:
+    """keep_alive:0 で即アンロードを要求(graceful 終了時のベストエフォート)。"""
+    factory = client_factory or (lambda: httpx.AsyncClient(timeout=2.0))
+    client = factory()
+    try:
+        r = await client.post(f"{ollama_host}/api/generate",
+                              json={"model": model, "keep_alive": 0})
+        return r.status_code == 200
+    except httpx.HTTPError:
+        return False
+    finally:
+        await client.aclose()

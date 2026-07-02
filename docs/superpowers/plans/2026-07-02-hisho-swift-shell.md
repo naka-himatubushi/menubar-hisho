@@ -1622,8 +1622,9 @@ rm -rf "$DIST/uv-python"
 
 PY="$PY_DIR/bin/python3"
 echo "==> hisho_core + deps を直接インストール"
-uv pip install --python "$PY" ./core
-# ↑ が環境エラーを出す場合の fallback: uv pip install --python "$PY" --break-system-packages ./core
+# uv 管理ツリーは EXTERNALLY-MANAGED マーカー付き → 同梱専用の私有ツリーなので明示的に上書き
+# (実測 2026-07-02: フラグ無しだと "externally managed" で拒否される)
+uv pip install --python "$PY" --break-system-packages ./core
 
 echo "==> import 検証"
 "$PY" -c "import hisho_core, fastapi, uvicorn, httpx; print('bundle imports OK')"
@@ -1647,7 +1648,9 @@ Expected: `bundle imports OK` → `relocation OK` → サイズ表示(~70-120MB)
 
 ```bash
 SMOKE_DIR=$(mktemp -d)
-HISHO_DB="$SMOKE_DIR/secretary.db" HISHO_PORT=0 build/core-dist/python/bin/python3 -m hisho_core &
+# tail -f /dev/null | … は必須: stdin を閉じたまま background 起動すると
+# 親死検知(stdin EOF → 自死)が即発動して core が起動直後に死ぬ(実測 2026-07-02)
+tail -f /dev/null | HISHO_DB="$SMOKE_DIR/secretary.db" HISHO_PORT=0 build/core-dist/python/bin/python3 -m hisho_core &
 CORE_PID=$!
 sleep 2
 PORT=$(python3 -c "import json;print(json.load(open('$SMOKE_DIR/core.json'))['port'])")
