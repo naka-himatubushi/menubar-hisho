@@ -2,11 +2,13 @@
 
 > 次セッションで**そのまま再開**するための地図。詳細は spec/plan/ledger を参照。
 
-## 現在地
+## 現在地 (2026-07-02 更新)
 
-- ブランチ **main** / HEAD `0e0e4cd` / **35 tests green** / working tree clean。
-- **Plan 1(Python core `hisho_core`)= 完成・main マージ済**。
-- 次にやるのは **Plan 2(Swift 殻 + パッケージング)= 未着手**。
+- ブランチ **feature/plan2-swift-shell** / **Plan 2 実装完了・E2E 自動チェック済 / main 未マージ**。
+- Python 41 tests + Swift 26 tests green。実 .app でチャット往復・relocation・kill -9 親→core 自死・egress ゼロ確認済。
+- plan: `docs/superpowers/plans/2026-07-02-hisho-swift-shell.md`(Codex レビュー 12 件反映済)
+- **残り**: ユーザー目視(MenuBarExtra focus 3点 + UI 見た目)→ NG なら HishoApp/Sources/HishoApp.swift を Variant B(plan Task 10 Step 4)へ差替 → main マージ。
+- 実測の落とし穴: `swift test`/`xcodebuild` は `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` 前置必須 / core 単体 background 起動は `tail -f /dev/null |` 前置(stdin EOF 自死) / core 変更後は `scripts/build_core.sh` 再実行してから .app リビルド。
 
 ## 何ができたか (Plan 1)
 
