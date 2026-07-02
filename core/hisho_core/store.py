@@ -187,6 +187,35 @@ class Store:
         self.conn.commit()
         return cid
 
+    def search_forgettable(self, query_vec: bytes, k: int) -> list[dict]:
+        """忘却候補の kNN。active かつ turn/document のみ。status(現況) は対象外。"""
+        rows = self.conn.execute(
+            "SELECT c.id, c.content, c.source_type, c.source_id, v.distance "
+            "FROM vec_chunks_bge_m3 v JOIN chunks c ON c.id = v.rowid "
+            "WHERE v.embedding MATCH ? AND v.k = ? "
+            "AND c.status = 'active' AND c.source_type IN ('turn','document') "
+            "ORDER BY v.distance", (query_vec, k)).fetchall()
+        return [dict(r) for r in rows]
+
+    def soft_delete_chunks(self, chunk_ids: list[int], now_ms: int) -> None:
+        """chunks を status='forgotten' に (物理削除しない)。vec0/embeddings は残す。"""
+        if not chunk_ids:
+            return
+        ph = ",".join("?" * len(chunk_ids))
+        self.conn.execute(
+            f"UPDATE chunks SET status='forgotten', forgotten_at=? WHERE id IN ({ph})",
+            (now_ms, *chunk_ids))
+        self.conn.commit()
+
+    def mark_turns_forgotten(self, turn_ids: list[int]) -> None:
+        """turn を status='forgotten' に → recent_turns(status='complete') の replay から外す。"""
+        if not turn_ids:
+            return
+        ph = ",".join("?" * len(turn_ids))
+        self.conn.execute(
+            f"UPDATE turns SET status='forgotten' WHERE id IN ({ph})", tuple(turn_ids))
+        self.conn.commit()
+
     def search_chunks(self, query_vec: bytes, k: int,
                       exclude_session_id: str | None = None) -> list[dict]:
         """vec0 kNN → chunks join。exclude_session_id は現在の会話(直近 replay 済)を除くため。"""
