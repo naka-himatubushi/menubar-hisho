@@ -100,6 +100,13 @@ class Store:
                 PRAGMA user_version = 2;
             """)
             self.conn.commit()
+        if self.conn.execute("PRAGMA user_version").fetchone()[0] < 3:
+            self.conn.executescript("""
+                ALTER TABLE chunks ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+                ALTER TABLE chunks ADD COLUMN forgotten_at INTEGER;
+                PRAGMA user_version = 3;
+            """)
+            self.conn.commit()
         self.rag_enabled = True
 
     def close(self) -> None:
@@ -186,7 +193,7 @@ class Store:
         rows = self.conn.execute(
             "SELECT c.content, c.session_id, c.source_type, v.distance "
             "FROM vec_chunks_bge_m3 v JOIN chunks c ON c.id = v.rowid "
-            "WHERE v.embedding MATCH ? AND v.k = ? "
+            "WHERE v.embedding MATCH ? AND v.k = ? AND c.status = 'active' "
             "ORDER BY v.distance",
             (query_vec, k + 16)).fetchall()  # 除外・再ランク分を見込み多めに取る
         out = []
