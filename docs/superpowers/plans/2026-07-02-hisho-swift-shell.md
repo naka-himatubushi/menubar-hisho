@@ -5,7 +5,7 @@
 
 **Goal:** 完成済み `hisho_core` (Python) を子プロセスとして抱える SwiftUI メニューバーアプリを作り、同梱 Python ごと relocatable な `.app` に固める。
 
-**Architecture:** ロジックと View は SwiftPM パッケージ **HishoKit** に置き `swift test` で回す(CLT だけで走る)。`.app` の組立・Info.plist・署名は **XcodeGen 生成の Xcode プロジェクト**(HishoApp) が担う薄殻。core は `Process` + stdin `Pipe` で spawn し、`/healthz` ポーリング → 純関数 reducer で 5 状態 (starting core / warming model / ready / ollama-down / core-stopped) を導出。チャットは `URLSession.bytes` の SSE を手書きパーサで読む。
+**Architecture:** ロジックと View は SwiftPM パッケージ **HishoKit** に置き `swift test` で回す(実測 2026-07-02: `import Testing` が CLT に無く、`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` が必要)。`.app` の組立・Info.plist・署名は **XcodeGen 生成の Xcode プロジェクト**(HishoApp) が担う薄殻。core は `Process` + stdin `Pipe` で spawn し、`/healthz` ポーリング → 純関数 reducer で 5 状態 (starting core / warming model / ready / ollama-down / core-stopped) を導出。チャットは `URLSession.bytes` の SSE を手書きパーサで読む。
 
 **Tech Stack:** Swift 6 (tools 6.0) / SwiftUI / Swift Testing (`import Testing`) / XcodeGen (導入済 `/opt/homebrew/bin/xcodegen`) / uv 管理 python-build-standalone CPython 3.13。SwiftPM 外部依存 **0**。
 
