@@ -149,3 +149,23 @@ ps aux | grep hisho_core
 - DB は status を `partial` (デフォルト)のまま保持する。
 - これにより、部分応答がシステムに記録され、後で再度質問できる。
 
+
+## Swift 殻 E2E (Plan 2)
+
+前提: ollama 稼働 (`ollama serve`)、`scripts/build_core.sh` + Task 10 ビルド済。
+
+1. **チャット往復**: .app 起動 → メニューバー → popover → 挨拶 → 逐次描画で応答。
+2. **記録確認**: `sqlite3 "$HOME/Library/Application Support/Hisho/secretary.db" \
+   "SELECT role, status, substr(content,1,20), json_extract(meta,'$.source') FROM turns ORDER BY id DESC LIMIT 4;"`
+   → user/assistant が complete、source=popover。
+3. **popover 破棄耐性**: 長い応答を要求 → streaming 中に popover を閉じ 3 秒後に再度開く → 続きが表示されている。
+4. **graceful 終了**: アプリ終了 → `pgrep -f hisho_core` が空(開発中の別 core が居ない前提。居るなら core.json の pid で確認)。
+5. **強制終了(孤児化なし)**: 再起動 → `kill -9 <Hisho pid>` → 2 秒以内に `pgrep -f hisho_core` が空。
+6. **ollama down 表示**: `OLLAMA_HOST=http://127.0.0.1:9 build/derived/Build/Products/Debug/Hisho.app/Contents/MacOS/Hisho`
+   → バナー「ollama に接続できません」→ 終了。
+7. **core stopped 表示**: 通常起動 → `kill -9 $(pgrep -f hisho_core)` → バナー「core 停止」→ [再起動] → 復帰。
+8. **外部ツール互換**: 稼働中に `curl -N http://127.0.0.1:51100/v1/chat/completions -H 'Content-Type: application/json' \
+   -d '{"model":"qwen3.6:35b-a3b","stream":true,"messages":[{"role":"user","content":"1+1は?"}]}'`
+   → SSE が流れ、DB に source=external で記録。
+9. **relocation + 孤児化**: `scripts/smoke_relocation.sh` → 2 つの OK。
+10. **egress なし**: チャット後 `scripts/check_no_egress.sh` → 「OK: 非 loopback 接続なし」。
