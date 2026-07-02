@@ -1,7 +1,9 @@
 """FastAPI アプリ組立。/healthz, /v1/models, /v1/chat/completions を提供。"""
 from __future__ import annotations
 import asyncio
+import json
 import logging
+import re
 import time
 import uuid
 import anyio
@@ -10,11 +12,14 @@ from fastapi.responses import StreamingResponse
 from . import context
 from . import llm
 from . import rag
+from . import tools as tools_module
 from .config import Config
 from .store import Store
 from .sse import sse, chunk, DONE, error_frame
 
 logger = logging.getLogger("hisho")
+
+MAX_TOOL_ITERS = 3
 
 
 def _now_ms() -> int:
@@ -124,6 +129,8 @@ def create_app(
     app.state.probe_fn = probe_fn or (lambda: _default_probe(config))
     app.state._probe_cache = {"t": 0.0, "v": None}
     app.state.write_lock = asyncio.Lock()
+    app.state.tool_registry = tools_module.REGISTRY
+    app.state.forget_intent = re.compile(r"忘れ|消し|消して|覚えなくて|削除")
     app.state.warmup_fn = warmup_fn or (lambda: llm.warmup(
         model=config.chat_model, ollama_host=config.ollama_host,
         num_ctx=config.num_ctx, keep_alive=config.keep_alive))
@@ -190,6 +197,11 @@ def create_app(
         else:
             messages = msgs_in
 
+        use_tools = (
+            tools_module.TOOL_SPECS
+            if source == "popover" and app.state.forget_intent.search(user_message)
+            else None)
+
         async with app.state.write_lock:
             assistant_id = await anyio.to_thread.run_sync(store.add_assistant_placeholder, session_id, model, _now_ms(), source)
 
@@ -199,6 +211,10 @@ def create_app(
             acc: list[str] = []
             status = "partial"          # default partial; only success promotes to complete
             finish = "stop"
+            forget_fired = False
+            forget_count = 0
+            convo = list(messages)      # tool ラウンドで伸ばす作業用コピー
+            tools_for_round = use_tools
 
             async def _index_pair():
                 """user + assistant ターンを索引(失敗しても無害)。"""
@@ -214,17 +230,45 @@ def create_app(
 
             try:
                 yield sse(chunk(cid, model, _now_ms() // 1000, delta={"role": "assistant"}, finish_reason=None))
-                async for evt in app.state.chat_fn(messages, model=model, ollama_host=cfg.ollama_host,
-                                                   num_ctx=cfg.num_ctx, keep_alive=cfg.keep_alive, think=False):
-                    if evt["type"] == "delta":
-                        acc.append(evt["content"])
-                        yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": evt["content"]}, finish_reason=None))
-                    elif evt["type"] == "error":
-                        status = "error"
-                        yield sse(error_frame(evt["message"]))
-                        return
-                    elif evt["type"] == "done":
-                        finish = evt.get("finish_reason", "stop")
+                for _ in range(MAX_TOOL_ITERS):
+                    pending_tool = None
+                    async for evt in app.state.chat_fn(
+                            convo, model=model, ollama_host=cfg.ollama_host,
+                            num_ctx=cfg.num_ctx, keep_alive=cfg.keep_alive, think=False,
+                            tools=tools_for_round):
+                        if evt["type"] == "delta":
+                            acc.append(evt["content"])
+                            yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": evt["content"]}, finish_reason=None))
+                        elif evt["type"] == "tool_call":
+                            pending_tool = evt
+                        elif evt["type"] == "error":
+                            status = "error"
+                            yield sse(error_frame(evt["message"]))
+                            return
+                        elif evt["type"] == "done":
+                            finish = evt.get("finish_reason", "stop")
+                    if pending_tool is None:
+                        break  # ツール呼び出しなし = 通常の最終回答で完了
+                    fn = app.state.tool_registry.get(pending_tool["name"])
+                    if fn is None:
+                        break
+                    result = await fn(pending_tool.get("arguments") or {},
+                                      store=store, config=cfg, write_lock=app.state.write_lock)
+                    if pending_tool["name"] == "forget_memories" and "error" not in result:
+                        forget_fired = True
+                        forget_count = result.get("count", 0)
+                    convo = convo + [
+                        {"role": "assistant", "content": "", "tool_calls": [
+                            {"id": pending_tool.get("id"), "type": "function",
+                             "function": {"name": pending_tool["name"],
+                                          "arguments": pending_tool.get("arguments") or {}}}]},
+                        {"role": "tool", "content": json.dumps(result, ensure_ascii=False)},
+                    ]
+                    tools_for_round = None  # 2周目以降はツール無し (無限ループ防止の一助)
+                if forget_fired:
+                    line = f"\n\n[記憶を {forget_count}件 忘れました]"
+                    acc.append(line)
+                    yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": line}, finish_reason=None))
                 yield sse(chunk(cid, model, _now_ms() // 1000, delta={}, finish_reason=finish))
                 yield DONE
                 status = "complete"
@@ -241,7 +285,7 @@ def create_app(
                     async with app.state.write_lock:
                         await anyio.to_thread.run_sync(store.finalize_turn, assistant_id, "".join(acc), None, status, _now_ms())
                         await anyio.to_thread.run_sync(store.touch_session, session_id, _now_ms())
-                if source == "popover":
+                if source == "popover" and not forget_fired:   # H1: 忘却往復は索引しない
                     asyncio.create_task(_index_pair())
 
         return StreamingResponse(gen(), media_type="text/event-stream",
