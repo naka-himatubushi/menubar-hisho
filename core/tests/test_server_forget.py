@@ -65,6 +65,97 @@ def test_forget_keyword_runs_tool_and_appends_deterministic_line(tmp_path):
     assert "承知しました" in body                   # モデルの最終回答も出る
 
 
+def test_tool_call_every_round_terminates_with_stop(tmp_path):
+    """モデルが毎回 tool_call を返し続ける (最終回答を出さない) 場合でも
+    MAX_TOOL_ITERS で打ち切られ、finish_reason は "tool_calls" のまま
+    クライアントへ漏れず "stop" に正規化される (Important #1)。"""
+    store = Store(str(tmp_path / "t.db"))
+    if not store.rag_enabled:
+        return
+    # 常に forget_memories を呼び続けるスクリプト (毎ラウンド同じ)
+    round_events = [
+        {"type": "tool_call", "id": "cX", "name": "forget_memories", "arguments": {"query": "猫"}},
+        {"type": "done", "finish_reason": "tool_calls"},
+    ]
+    script = [round_events, round_events, round_events, round_events]
+    chat_fn, calls = _make_chat_fn(script)
+    app = create_app(store, load_config(), chat_fn=chat_fn,
+                     probe_fn=lambda: _ok_probe(), warmup_fn=_true, unload_fn=_true)
+
+    async def fake_forget(args, **kw):
+        return {"count": 1, "matched": 1, "truncated": False, "items": ["猫A"]}
+
+    app.state.tool_registry = {"forget_memories": fake_forget}
+    with TestClient(app) as c:
+        r = c.post("/v1/chat/completions", json={"session_id": "s3", "messages": [{"role": "user", "content": "猫のこと忘れて"}]},
+                   headers={"X-Hisho-Source": "popover"})
+        assert r.status_code == 200
+        body = _sse_text(r.content)
+    # ループは MAX_TOOL_ITERS 回で打ち切られる (無限ループしない)
+    assert calls["n"] <= 3
+    # 最終フレームの finish_reason は "stop" (tool_calls のまま漏れない)
+    frames = [json.loads(line[len("data: "):]) for line in body.splitlines()
+              if line.startswith("data: ") and line != "data: [DONE]"]
+    finish_reasons = [f["choices"][0]["finish_reason"] for f in frames
+                      if f["choices"][0]["finish_reason"] is not None]
+    assert finish_reasons, "finish_reason を含むフレームが無い"
+    assert finish_reasons[-1] == "stop"
+    assert "tool_calls" not in finish_reasons
+
+
+def test_unknown_tool_breaks_cleanly_with_stop(tmp_path):
+    """モデルが未登録のツール名を呼んだ場合、サーバはエラーにせず
+    ループを break し、finish_reason を "stop" に正規化して完了する (Important #1, #2)。"""
+    store = Store(str(tmp_path / "t.db"))
+    script = [
+        [{"type": "tool_call", "id": "cU", "name": "nonexistent_tool", "arguments": {}},
+         {"type": "done", "finish_reason": "tool_calls"}],
+    ]
+    chat_fn, calls = _make_chat_fn(script)
+    app = create_app(store, load_config(), chat_fn=chat_fn,
+                     probe_fn=lambda: _ok_probe(), warmup_fn=_true, unload_fn=_true)
+    with TestClient(app) as c:
+        r = c.post("/v1/chat/completions", json={"session_id": "s4", "messages": [{"role": "user", "content": "猫のこと忘れて"}]},
+                   headers={"X-Hisho-Source": "popover"})
+        assert r.status_code == 200
+        body = _sse_text(r.content)
+    assert "error" not in body.lower() or "hisho_error" not in body  # クライアントへエラーは伝播しない
+    frames = [json.loads(line[len("data: "):]) for line in body.splitlines()
+              if line.startswith("data: ") and line != "data: [DONE]"]
+    finish_reasons = [f["choices"][0]["finish_reason"] for f in frames
+                      if f["choices"][0]["finish_reason"] is not None]
+    assert finish_reasons and finish_reasons[-1] == "stop"
+
+
+def test_tool_raises_is_logged_and_reported_as_error(tmp_path, caplog):
+    """ツール実行中に例外が発生した場合、サーバ側で exc_info 付きログを残し、
+    クライアントには error_frame を送って完了する (Important #3)。"""
+    import logging
+    store = Store(str(tmp_path / "t.db"))
+    script = [
+        [{"type": "tool_call", "id": "cE", "name": "forget_memories", "arguments": {"query": "猫"}},
+         {"type": "done", "finish_reason": "tool_calls"}],
+    ]
+    chat_fn, calls = _make_chat_fn(script)
+    app = create_app(store, load_config(), chat_fn=chat_fn,
+                     probe_fn=lambda: _ok_probe(), warmup_fn=_true, unload_fn=_true)
+
+    async def raising_forget(args, **kw):
+        raise RuntimeError("boom: db error")
+
+    app.state.tool_registry = {"forget_memories": raising_forget}
+    with caplog.at_level(logging.WARNING, logger="hisho"):
+        with TestClient(app) as c:
+            r = c.post("/v1/chat/completions", json={"session_id": "s5", "messages": [{"role": "user", "content": "猫のこと忘れて"}]},
+                       headers={"X-Hisho-Source": "popover"})
+            assert r.status_code == 200
+            body = _sse_text(r.content)
+    assert "hisho_error" in body  # クライアントには error_frame が届く
+    # サーバ側ログに例外が exc_info 付きで記録される
+    matching = [rec for rec in caplog.records if "forget_memories" in rec.message and rec.exc_info]
+    assert matching, "tool 例外が exc_info 付きでログされていない"
+
+
 # --- テスト用ヘルパ ---
 async def _ok_probe():
     return {"reachable": True, "version": "0", "model_present": True, "model_loaded": True, "models": ["m"]}

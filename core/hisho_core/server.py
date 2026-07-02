@@ -251,9 +251,18 @@ def create_app(
                         break  # ツール呼び出しなし = 通常の最終回答で完了
                     fn = app.state.tool_registry.get(pending_tool["name"])
                     if fn is None:
+                        logger.warning("unknown tool called: %s", pending_tool.get("name"))
                         break
-                    result = await fn(pending_tool.get("arguments") or {},
-                                      store=store, config=cfg, write_lock=app.state.write_lock)
+                    try:
+                        result = await fn(pending_tool.get("arguments") or {},
+                                          store=store, config=cfg, write_lock=app.state.write_lock)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.warning("tool %s failed", pending_tool["name"], exc_info=True)
+                        status = "error"
+                        yield sse(error_frame(f"tool {pending_tool['name']} failed"))
+                        return
                     if pending_tool["name"] == "forget_memories" and "error" not in result:
                         forget_fired = True
                         forget_count = result.get("count", 0)
@@ -265,6 +274,10 @@ def create_app(
                         {"role": "tool", "content": json.dumps(result, ensure_ascii=False)},
                     ]
                     tools_for_round = None  # 2周目以降はツール無し (無限ループ防止の一助)
+                if finish == "tool_calls":
+                    # ループが tool_call のまま終了した (MAX_TOOL_ITERS 到達 or 未知ツールで break) →
+                    # クライアントには非ツールの終端理由を返す (H-Task5-1)
+                    finish = "stop"
                 if forget_fired:
                     line = f"\n\n[記憶を {forget_count}件 忘れました]"
                     acc.append(line)
