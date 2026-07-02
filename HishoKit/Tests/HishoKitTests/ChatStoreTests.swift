@@ -73,4 +73,22 @@ struct FakeStreamer: ChatStreaming {
         await store.awaitStreamEnd()
         #expect(store.messages.filter { $0.role == .user }.count == 1)
     }
+
+    @Test func clearEmptiesLogAndRotatesSession() async {
+        let store = ChatStore(client: FakeStreamer(events: [.delta("hi"), .done]))
+        let firstSession = store.sessionID
+        store.send("q", port: 51100)
+        await store.awaitStreamEnd()
+        #expect(!store.messages.isEmpty)
+
+        store.clear()
+        #expect(store.messages.isEmpty)
+        #expect(store.sessionID != firstSession)  // 新スレッド = session_id 再生成
+        #expect(store.isStreaming == false)
+
+        // 新スレッドで再送信でき、ログが作り直される
+        store.send("again", port: 51100)
+        await store.awaitStreamEnd()
+        #expect(store.messages.filter { $0.role == .user }.count == 1)
+    }
 }
