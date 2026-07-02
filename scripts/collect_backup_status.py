@@ -54,9 +54,13 @@ def _collect() -> str:
         lines.append(f"■ {d['name']}\n{indented}")
     lines.append("")
     lines.append("データの限界 (回答時はこの通りに伝えること):")
-    lines.append("・「アイドル」は宛先設定と待機状態の確認のみ。バックアップが正常完了した証明ではない。")
-    lines.append("・最終バックアップ完了日時の真実は mini 側の sparsebundle にあり、mini 接続不可の間は未確認。")
-    lines.append("・完了を断定せず「宛先は設定済み・最終完了日時は未確認」と答えるのが正確。")
+    if any(".sparsebundle" in ln for ln in lines):
+        lines.append("・sparsebundle の「最終書込」日時 = 各 Mac の最終バックアップ活動の実測値。日時付きで答えてよい。")
+    else:
+        lines.append("・最終バックアップ完了日時の真実は mini 側の sparsebundle にあり、mini 接続不可の間は未確認。")
+        lines.append("・完了を断定せず「宛先は設定済み・最終完了日時は未確認」と答えるのが正確。")
+    lines.append("・「現在アイドル」は待機状態の表示であり、それ単体は完了の証明ではない。")
+    lines.append("・「実体なし」「未実施」「接続不可」の機器がある場合、質問が全体向けなら必ず先に警告として言及すること。")
     lines.append("(この情報は定期収集の時点値。今すぐの状態が必要なら再収集が要る)")
     return "\n".join(lines)
 
