@@ -64,8 +64,23 @@ async def _default_probe(config: Config) -> dict:
     return out
 
 
+async def warmup_when_ready(probe, warmup, *, attempts=120, interval=2.0,
+                            sleep=asyncio.sleep) -> bool:
+    """ollama が reachable になり warm-up が成功するまで繰り返す。戻り値=成功したか。"""
+    for _ in range(attempts):
+        try:
+            p = await probe()
+            if p.get("reachable") and await warmup():
+                return True
+        except Exception:
+            logger.debug("warmup attempt failed", exc_info=True)
+        await sleep(interval)
+    return False
+
+
 def create_app(
-    store: Store, config: Config, *, chat_fn=None, probe_fn=None
+    store: Store, config: Config, *, chat_fn=None, probe_fn=None,
+    warmup_fn=None, unload_fn=None,
 ) -> FastAPI:
     """FastAPI アプリを組立。
 
@@ -74,17 +89,40 @@ def create_app(
         config: Config インスタンス
         chat_fn: LLM チャット関数 (既定: llm.chat_stream)
         probe_fn: 健康状態プローブ関数 (既定: _default_probe(config))
+        warmup_fn: warm-up 関数 (既定: llm.warmup with config 値)
+        unload_fn: アンロード関数 (既定: llm.unload with config 値)
 
     Returns:
         FastAPI アプリ
     """
-    app = FastAPI()
+    import contextlib
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        task = asyncio.create_task(
+            warmup_when_ready(app.state.probe_fn, app.state.warmup_fn))
+        yield
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        try:
+            await asyncio.wait_for(app.state.unload_fn(), timeout=2.0)
+        except Exception:
+            logger.debug("unload on shutdown failed", exc_info=True)
+
+    app = FastAPI(lifespan=_lifespan)
     app.state.store = store
     app.state.config = config
     app.state.chat_fn = chat_fn or llm.chat_stream
     app.state.probe_fn = probe_fn or (lambda: _default_probe(config))
     app.state._probe_cache = {"t": 0.0, "v": None}
     app.state.write_lock = asyncio.Lock()
+    app.state.warmup_fn = warmup_fn or (lambda: llm.warmup(
+        model=config.chat_model, ollama_host=config.ollama_host,
+        num_ctx=config.num_ctx, keep_alive=config.keep_alive))
+    app.state.unload_fn = unload_fn or (lambda: llm.unload(
+        model=config.chat_model, ollama_host=config.ollama_host))
 
     async def _probe() -> dict:
         """probe_fn の結果を ~3秒キャッシュ。"""
@@ -105,7 +143,8 @@ def create_app(
         return {
             "core": True,
             "ollama": {"reachable": p["reachable"], "version": p["version"]},
-            "model": {"present": p["model_present"], "loaded": p["model_loaded"]},
+            "model": {"present": p["model_present"], "loaded": p["model_loaded"],
+                      "name": config.chat_model},
         }
 
     @app.get("/v1/models")

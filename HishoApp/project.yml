@@ -1,0 +1,48 @@
+# 役割: HishoApp.xcodeproj の生成定義(XcodeGen)。生成物はコミットせず、このファイルが真実。
+name: HishoApp
+options:
+  bundleIdPrefix: dev.hisho
+  deploymentTarget:
+    macOS: "26.0"
+packages:
+  HishoKit:
+    path: ../HishoKit
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+targets:
+  HishoApp:
+    type: application
+    platform: macOS
+    sources: [Sources]
+    dependencies:
+      - package: HishoKit
+    info:
+      path: Info.plist
+      properties:
+        CFBundleName: Hisho
+        CFBundleDisplayName: JARVIS
+        LSUIElement: true            # Dock に出さないメニューバー常駐
+        LSMinimumSystemVersion: "26.0"
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_NAME: Hisho
+        PRODUCT_BUNDLE_IDENTIFIER: dev.hisho.app
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"      # ad-hoc 署名(自機ローカル、spec §5)
+        ENABLE_HARDENED_RUNTIME: "NO"   # quote 必須 — YAML boolean 化を避ける
+        ENABLE_APP_SANDBOX: "NO"        # 同上。entitlements ファイルは作らない(sandbox OFF の実体)
+    postBuildScripts:
+      - name: Embed Python core
+        script: '"${PROJECT_DIR}/../scripts/embed_core.sh"'
+        basedOnDependencyAnalysis: false
+schemes:
+  HishoApp:
+    build:
+      targets:
+        HishoApp: all
+    run:
+      config: Debug
