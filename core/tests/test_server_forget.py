@@ -1,5 +1,7 @@
 """役割: server のツールループ (キーワードゲート・実行・決定的報告・索引スキップ) の統合テスト。"""
 import json
+import anyio
+import httpx
 from fastapi.testclient import TestClient
 from hisho_core.server import create_app
 from hisho_core.config import load_config
@@ -164,6 +166,116 @@ def test_tool_raises_is_logged_and_reported_as_error(tmp_path, caplog):
     # サーバ側ログに例外が exc_info 付きで記録される
     matching = [rec for rec in caplog.records if "forget_memories" in rec.message and rec.exc_info]
     assert matching, "tool 例外が exc_info 付きでログされていない"
+
+
+async def test_forget_success_skips_indexing_and_reports_count(tmp_path, monkeypatch):
+    """H1 正常系: forget が成功した往復は索引されず、決定的な件数行が出る。"""
+    from hisho_core import server as server_mod
+
+    cfg = load_config(env={"HISHO_DB": str(tmp_path / "t.db")})
+    store = Store(cfg.db_path, vec_dim=4)
+    script = [
+        [{"type": "tool_call", "id": "c1", "name": "forget_memories", "arguments": {"query": "猫"}},
+         {"type": "done", "finish_reason": "tool_calls"}],
+        [{"type": "delta", "content": "承知しました"}, {"type": "done", "finish_reason": "stop"}],
+    ]
+    chat_fn, calls = _make_chat_fn(script)
+    app = create_app(store, cfg, chat_fn=chat_fn,
+                     probe_fn=lambda: _ok_probe(), warmup_fn=_true, unload_fn=_true)
+
+    async def fake_forget(args, **kw):
+        return {"count": 2, "matched": 2, "truncated": False, "items": ["猫A", "猫B"]}
+
+    app.state.tool_registry = {"forget_memories": fake_forget}
+
+    indexed = []
+
+    async def spy_index(store_, lock, turn_id, session_id, content, *, config, client_factory=None):
+        indexed.append(content)
+        return True
+
+    async def fake_retrieve(store_, msg, *, config, exclude_session_id, client_factory=None):
+        return []
+
+    monkeypatch.setattr(server_mod.rag, "index_turn", spy_index)
+    monkeypatch.setattr(server_mod.rag, "retrieve", fake_retrieve)
+
+    async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.post("/v1/chat/completions",
+                         headers={"X-Hisho-Source": "popover"},
+                         json={"session_id": "s6", "messages": [{"role": "user", "content": "猫のこと忘れて"}]})
+        body = r.text
+    await anyio.sleep(0.05)  # fire-and-forget の索引タスクがもしあれば走りきるのを待つ
+    assert "[記憶を 2件 忘れました]" in body
+    assert indexed == []  # 忘却往復は索引されない
+
+
+async def test_forget_embed_failure_still_skips_indexing(tmp_path, monkeypatch):
+    """H1 回帰ガード (Critical): forget が {"error": "embed_failed"} を返しても
+    (成功していなくても) 索引してはいけない。ここが直前まで抜けていたバグ。"""
+    from hisho_core import server as server_mod
+
+    cfg = load_config(env={"HISHO_DB": str(tmp_path / "t.db")})
+    store = Store(cfg.db_path, vec_dim=4)
+    script = [
+        [{"type": "tool_call", "id": "c1", "name": "forget_memories", "arguments": {"query": "猫"}},
+         {"type": "done", "finish_reason": "tool_calls"}],
+        [{"type": "delta", "content": "すみません、うまくいきませんでした"}, {"type": "done", "finish_reason": "stop"}],
+    ]
+    chat_fn, calls = _make_chat_fn(script)
+    app = create_app(store, cfg, chat_fn=chat_fn,
+                     probe_fn=lambda: _ok_probe(), warmup_fn=_true, unload_fn=_true)
+
+    async def failing_forget(args, **kw):
+        return {"error": "embed_failed", "message": "今 記憶を整理できません"}
+
+    app.state.tool_registry = {"forget_memories": failing_forget}
+
+    indexed = []
+
+    async def spy_index(store_, lock, turn_id, session_id, content, *, config, client_factory=None):
+        indexed.append(content)
+        return True
+
+    async def fake_retrieve(store_, msg, *, config, exclude_session_id, client_factory=None):
+        return []
+
+    monkeypatch.setattr(server_mod.rag, "index_turn", spy_index)
+    monkeypatch.setattr(server_mod.rag, "retrieve", fake_retrieve)
+
+    async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.post("/v1/chat/completions",
+                         headers={"X-Hisho-Source": "popover"},
+                         json={"session_id": "s7", "messages": [{"role": "user", "content": "猫のこと忘れて"}]})
+        assert r.status_code == 200
+    await anyio.sleep(0.05)  # fire-and-forget の索引タスクがもしあれば走りきるのを待つ
+    assert indexed == []  # 失敗しても「猫忘れて」往復を再索引してはいけない (自己汚染バグの再現防止)
+
+
+def test_forget_truncated_result_reports_real_total(tmp_path):
+    """silent cap 禁止: truncated な結果はモデルの narrative に頼らず、
+    決定的な行が実際の該当件数と上限到達を明示する。"""
+    store = Store(str(tmp_path / "t.db"))
+    script = [
+        [{"type": "tool_call", "id": "c1", "name": "forget_memories", "arguments": {"query": "猫"}},
+         {"type": "done", "finish_reason": "tool_calls"}],
+        [{"type": "delta", "content": "承知しました"}, {"type": "done", "finish_reason": "stop"}],
+    ]
+    chat_fn, calls = _make_chat_fn(script)
+    app = create_app(store, load_config(), chat_fn=chat_fn,
+                     probe_fn=lambda: _ok_probe(), warmup_fn=_true, unload_fn=_true)
+
+    async def fake_forget(args, **kw):
+        return {"count": 15, "matched": 23, "truncated": True, "items": ["猫A"] * 15}
+
+    app.state.tool_registry = {"forget_memories": fake_forget}
+    with TestClient(app) as c:
+        r = c.post("/v1/chat/completions", json={"session_id": "s8", "messages": [{"role": "user", "content": "猫のこと忘れて"}]},
+                   headers={"X-Hisho-Source": "popover"})
+        body = _sse_text(r.content)
+    assert "[記憶を 15件 忘れました (該当 23件中、上限まで)]" in body
 
 
 # --- テスト用ヘルパ ---

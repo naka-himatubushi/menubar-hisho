@@ -213,6 +213,8 @@ def create_app(
             finish = "stop"
             forget_fired = False
             forget_count = 0
+            forget_result: dict | None = None
+            tool_used_forget = False   # H1: forget を「試みた」かどうか(成否・例外を問わない)
             convo = list(messages)      # tool ラウンドで伸ばす作業用コピー
             tools_for_round = use_tools
 
@@ -253,6 +255,10 @@ def create_app(
                     if fn is None:
                         logger.warning("unknown tool called: %s", pending_tool.get("name"))
                         break
+                    if pending_tool["name"] == "forget_memories":
+                        # H1: 試行した時点でフラグを立てる。成否・例外に関わらず
+                        # finally での索引スキップ判定はこのフラグだけを見る。
+                        tool_used_forget = True
                     try:
                         result = await fn(pending_tool.get("arguments") or {},
                                           store=store, config=cfg, write_lock=app.state.write_lock)
@@ -266,6 +272,7 @@ def create_app(
                     if pending_tool["name"] == "forget_memories" and "error" not in result:
                         forget_fired = True
                         forget_count = result.get("count", 0)
+                        forget_result = result
                     convo = convo + [
                         {"role": "assistant", "content": "", "tool_calls": [
                             {"id": pending_tool.get("id"), "type": "function",
@@ -279,7 +286,13 @@ def create_app(
                     # クライアントには非ツールの終端理由を返す (H-Task5-1)
                     finish = "stop"
                 if forget_fired:
-                    line = f"\n\n[記憶を {forget_count}件 忘れました]"
+                    # silent cap 禁止 (spec §5): truncated の場合はモデルの narrative に頼らず
+                    # 決定的な行で実際の該当件数と上限到達を明示する。
+                    if forget_result and forget_result.get("truncated"):
+                        matched = forget_result.get("matched", forget_count)
+                        line = f"\n\n[記憶を {forget_count}件 忘れました (該当 {matched}件中、上限まで)]"
+                    else:
+                        line = f"\n\n[記憶を {forget_count}件 忘れました]"
                     acc.append(line)
                     yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": line}, finish_reason=None))
                 yield sse(chunk(cid, model, _now_ms() // 1000, delta={}, finish_reason=finish))
@@ -298,7 +311,7 @@ def create_app(
                     async with app.state.write_lock:
                         await anyio.to_thread.run_sync(store.finalize_turn, assistant_id, "".join(acc), None, status, _now_ms())
                         await anyio.to_thread.run_sync(store.touch_session, session_id, _now_ms())
-                if source == "popover" and not forget_fired:   # H1: 忘却往復は索引しない
+                if source == "popover" and not tool_used_forget:   # H1: 忘却を試みた往復は(成否問わず)索引しない
                     asyncio.create_task(_index_pair())
 
         return StreamingResponse(gen(), media_type="text/event-stream",

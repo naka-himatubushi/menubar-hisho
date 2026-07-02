@@ -11,7 +11,7 @@ from . import rag
 
 logger = logging.getLogger("hisho")
 
-FORGET_THRESHOLD = 0.40   # 距離。小さいほど近い。高精度側=過少削除寄り。要スモーク校正
+FORGET_THRESHOLD = 0.85   # 距離(L2,非正規化)。実測校正: 「猫」直接一致≈0.82, 関連≈0.55-0.80, 無関係≈0.91+。0.85 で topic を捕捉し犬/カレー等は残す。soft-delete 可逆。
 MAX_FORGET = 15
 
 TOOL_SPECS = [{
