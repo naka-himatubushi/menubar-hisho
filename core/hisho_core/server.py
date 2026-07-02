@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from . import context
 from . import llm
+from . import rag
 from .config import Config
 from .store import Store
 from .sse import sse, chunk, DONE, error_frame
@@ -102,10 +103,15 @@ def create_app(
     async def _lifespan(app: FastAPI):
         task = asyncio.create_task(
             warmup_when_ready(app.state.probe_fn, app.state.warmup_fn))
+        backfill_task = asyncio.create_task(
+            rag.backfill(app.state.store, app.state.write_lock, config=config))
         yield
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        backfill_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await backfill_task
         try:
             await asyncio.wait_for(app.state.unload_fn(), timeout=2.0)
         except Exception:
@@ -171,17 +177,21 @@ def create_app(
         now = _now_ms()
         async with app.state.write_lock:
             await anyio.to_thread.run_sync(store.get_or_create_session, session_id, now)
-            await anyio.to_thread.run_sync(store.append_user_turn, session_id, user_message, now, source)
+            user_turn_id = await anyio.to_thread.run_sync(store.append_user_turn, session_id, user_message, now, source)
 
         if source == "popover":
+            memories = await rag.retrieve(store, user_message, config=cfg,
+                                          exclude_session_id=session_id)
             recent = await anyio.to_thread.run_sync(store.recent_turns, session_id, cfg.history_replay_turns)
             recent_wo_last = recent[:-1] if recent and recent[-1]["role"] == "user" else recent
-            messages = context.build_messages(recent_wo_last, user_message, cfg.num_ctx, cfg.response_reserve)
+            messages = context.build_messages(recent_wo_last, user_message,
+                                              cfg.num_ctx, cfg.response_reserve,
+                                              memories=memories)
         else:
             messages = msgs_in
 
         async with app.state.write_lock:
-            assistant_id = await anyio.to_thread.run_sync(store.add_assistant_placeholder, session_id, model, _now_ms())
+            assistant_id = await anyio.to_thread.run_sync(store.add_assistant_placeholder, session_id, model, _now_ms(), source)
 
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
@@ -189,6 +199,19 @@ def create_app(
             acc: list[str] = []
             status = "partial"          # default partial; only success promotes to complete
             finish = "stop"
+
+            async def _index_pair():
+                """user + assistant ターンを索引(失敗しても無害)。"""
+                try:
+                    await rag.index_turn(store, app.state.write_lock, user_turn_id,
+                                         session_id, user_message, config=cfg)
+                    text = "".join(acc)
+                    if text:
+                        await rag.index_turn(store, app.state.write_lock, assistant_id,
+                                             session_id, text, config=cfg)
+                except Exception:
+                    logger.warning("index after chat failed", exc_info=True)
+
             try:
                 yield sse(chunk(cid, model, _now_ms() // 1000, delta={"role": "assistant"}, finish_reason=None))
                 async for evt in app.state.chat_fn(messages, model=model, ollama_host=cfg.ollama_host,
@@ -218,6 +241,8 @@ def create_app(
                     async with app.state.write_lock:
                         await anyio.to_thread.run_sync(store.finalize_turn, assistant_id, "".join(acc), None, status, _now_ms())
                         await anyio.to_thread.run_sync(store.touch_session, session_id, _now_ms())
+                if source == "popover":
+                    asyncio.create_task(_index_pair())
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

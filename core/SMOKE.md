@@ -169,3 +169,13 @@ ps aux | grep hisho_core
    → SSE が流れ、DB に source=external で記録。
 9. **relocation + 孤児化**: `scripts/smoke_relocation.sh` → 2 つの OK。
 10. **egress なし**: チャット後 `scripts/check_no_egress.sh` → 「OK: 非 loopback 接続なし」。
+
+## RAG 記憶 E2E (Plan 3)
+
+前提: .app 稼働 (model loaded)、bge-m3 導入済。
+
+1. **教える**: popover 経路 (`X-Hisho-Source: popover`) で `session_id=sess-a` に「覚えておいて: 私の好物はカレーライスで、猫の名前はモチです」→ 3 秒後 `SELECT COUNT(*) FROM chunks;` が +2 (user/assistant)。
+2. **想起**: 別 `session_id=sess-b` で「私の猫の名前、覚えてる?」→ 応答に「モチ」(2026-07-02 実測: 「はい、猫のお名前は「モチ」です。」)。
+3. **external 非汚染**: popover ヘッダ無しで chat → chunks が増えない。
+4. **backfill**: DB に未索引 popover ターンがある状態で core 再起動 → chunks が自動で増える。
+5. **RAG 無効化**: `HISHO_RAG=0` で起動 → チャットは通常動作、chunks 増えない。

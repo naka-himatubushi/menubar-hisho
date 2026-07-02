@@ -1,7 +1,10 @@
-"""SQLite の唯一のスキーマ所有者。会話ターンの記録・取得を担う(WAL, STRICT)。"""
+"""SQLite の唯一のスキーマ所有者。会話ターンの記録・取得を担う(WAL, STRICT)。v2 で RAG テーブルを追加。"""
 from __future__ import annotations
 import json
+import logging
 import sqlite3
+
+logger = logging.getLogger("hisho")
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -38,10 +41,12 @@ END;
 
 
 class Store:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, vec_dim: int = 1024):
+        self.vec_dim = vec_dim
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._bootstrap()
+        self._init_rag()
 
     def _bootstrap(self) -> None:
         c = self.conn
@@ -57,6 +62,45 @@ class Store:
 
     def user_version(self) -> int:
         return self.conn.execute("PRAGMA user_version").fetchone()[0]
+
+    def _init_rag(self) -> None:
+        """v2 additive 移行: sqlite-vec をロードし chunks/embeddings/vec0 を作る。
+        拡張ロード失敗時は rag_enabled=False で通常動作を続ける(クラッシュ禁止)。"""
+        self.rag_enabled = False
+        try:
+            import sqlite_vec
+            self.conn.enable_load_extension(True)
+            sqlite_vec.load(self.conn)
+            self.conn.enable_load_extension(False)
+        except Exception:
+            logger.warning("sqlite-vec load failed — RAG disabled", exc_info=True)
+            return
+        if self.conn.execute("PRAGMA user_version").fetchone()[0] < 2:
+            self.conn.executescript(f"""
+                CREATE TABLE IF NOT EXISTS chunks (
+                    id INTEGER PRIMARY KEY,
+                    source_type TEXT NOT NULL,
+                    source_id INTEGER NOT NULL,
+                    session_id TEXT,
+                    content TEXT NOT NULL,
+                    token_count INTEGER,
+                    meta TEXT NOT NULL DEFAULT '{{}}'
+                ) STRICT;
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_chunks_source
+                    ON chunks(source_type, source_id);
+                CREATE TABLE IF NOT EXISTS embeddings (
+                    chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+                    model TEXT NOT NULL,
+                    dim INTEGER NOT NULL,
+                    vec BLOB NOT NULL,
+                    PRIMARY KEY (chunk_id, model)
+                ) STRICT;
+                CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks_bge_m3
+                    USING vec0(embedding float[{self.vec_dim}]);
+                PRAGMA user_version = 2;
+            """)
+            self.conn.commit()
+        self.rag_enabled = True
 
     def close(self) -> None:
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -82,11 +126,12 @@ class Store:
         self.conn.commit()
         return cur.lastrowid
 
-    def add_assistant_placeholder(self, session_id: str, model: str, now_ms: int) -> int:
+    def add_assistant_placeholder(self, session_id: str, model: str, now_ms: int,
+                                   source: str = "external") -> int:
         cur = self.conn.execute(
-            "INSERT INTO turns(session_id, seq, role, content, status, model, created_at) "
-            "VALUES(?, (SELECT COALESCE(MAX(seq),0)+1 FROM turns WHERE session_id=?), 'assistant', '', 'streaming', ?, ?)",
-            (session_id, session_id, model, now_ms))
+            "INSERT INTO turns(session_id, seq, role, content, status, model, created_at, meta) "
+            "VALUES(?, (SELECT COALESCE(MAX(seq),0)+1 FROM turns WHERE session_id=?), 'assistant', '', 'streaming', ?, ?, ?)",
+            (session_id, session_id, model, now_ms, json.dumps({"source": source})))
         self.conn.commit()
         return cur.lastrowid
 
@@ -112,3 +157,54 @@ class Store:
             "SELECT id, title, last_activity FROM sessions WHERE status != 'deleted' "
             "ORDER BY last_activity DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
+
+    def add_chunk(self, source_type: str, source_id: int, session_id: str,
+                  content: str, vec: bytes, model: str, dim: int) -> int:
+        """chunk + embedding + vec0 索引を 1 txn で追加。戻り値 chunk id。重複 source は既存 id を返す。
+        (DO NOTHING 後の lastrowid/rowcount は挙動が曖昧なため、SELECT 先行で明示分岐する。)"""
+        row = self.conn.execute(
+            "SELECT id FROM chunks WHERE source_type=? AND source_id=?",
+            (source_type, source_id)).fetchone()
+        if row:
+            return row[0]
+        cur = self.conn.execute(
+            "INSERT INTO chunks(source_type, source_id, session_id, content) VALUES(?,?,?,?)",
+            (source_type, source_id, session_id, content))
+        cid = cur.lastrowid
+        self.conn.execute(
+            "INSERT INTO embeddings(chunk_id, model, dim, vec) VALUES(?,?,?,?)",
+            (cid, model, dim, vec))
+        self.conn.execute(
+            "INSERT INTO vec_chunks_bge_m3(rowid, embedding) VALUES(?,?)",
+            (cid, vec))
+        self.conn.commit()
+        return cid
+
+    def search_chunks(self, query_vec: bytes, k: int,
+                      exclude_session_id: str | None = None) -> list[dict]:
+        """vec0 kNN → chunks join。exclude_session_id は現在の会話(直近 replay 済)を除くため。"""
+        rows = self.conn.execute(
+            "SELECT c.content, c.session_id, v.distance "
+            "FROM vec_chunks_bge_m3 v JOIN chunks c ON c.id = v.rowid "
+            "WHERE v.embedding MATCH ? AND v.k = ? "
+            "ORDER BY v.distance",
+            (query_vec, k + 8)).fetchall()  # 除外分を見込み多めに取る
+        out = []
+        for content, session_id, distance in rows:
+            if exclude_session_id is not None and session_id == exclude_session_id:
+                continue
+            out.append({"content": content, "session_id": session_id, "distance": distance})
+            if len(out) >= k:
+                break
+        return out
+
+    def unindexed_popover_turns(self, limit: int = 50) -> list[dict]:
+        """未索引の popover complete ターン(10文字以上)を古い順に返す(backfill 用)。"""
+        rows = self.conn.execute(
+            "SELECT t.id, t.session_id, t.content FROM turns t "
+            "LEFT JOIN chunks c ON c.source_type='turn' AND c.source_id = t.id "
+            "WHERE c.id IS NULL AND t.status='complete' "
+            "  AND length(t.content) >= 10 "
+            "  AND json_extract(t.meta, '$.source') = 'popover' "
+            "ORDER BY t.id LIMIT ?", (limit,)).fetchall()
+        return [{"id": r[0], "session_id": r[1], "content": r[2]} for r in rows]
