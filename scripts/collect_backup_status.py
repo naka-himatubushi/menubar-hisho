@@ -53,6 +53,10 @@ def _collect() -> str:
         indented = "\n".join("  " + ln for ln in result.splitlines()[:12])
         lines.append(f"■ {d['name']}\n{indented}")
     lines.append("")
+    lines.append("データの限界 (回答時はこの通りに伝えること):")
+    lines.append("・「アイドル」は宛先設定と待機状態の確認のみ。バックアップが正常完了した証明ではない。")
+    lines.append("・最終バックアップ完了日時の真実は mini 側の sparsebundle にあり、mini 接続不可の間は未確認。")
+    lines.append("・完了を断定せず「宛先は設定済み・最終完了日時は未確認」と答えるのが正確。")
     lines.append("(この情報は定期収集の時点値。今すぐの状態が必要なら再収集が要る)")
     return "\n".join(lines)
 

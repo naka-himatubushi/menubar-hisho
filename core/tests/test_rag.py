@@ -13,9 +13,10 @@ def _cfg(tmp_path, **extra):
 
 
 class _FakeEmbedClient:
-    """/api/embed を真似る。単語→固定4次元ベクトルの決定的マップ。"""
-    def __init__(self, dim=4):
+    """/api/embed を真似る。text→軸 の明示マップで決定的 one-hot を返す (未知 text は軸3)。"""
+    def __init__(self, mapping=None, dim=4):
         self.dim = dim
+        self.mapping = mapping or {}
         self.calls = []
 
     async def post(self, url, json=None):
@@ -23,7 +24,7 @@ class _FakeEmbedClient:
         vecs = []
         for text in json["input"]:
             v = [0.0] * self.dim
-            v[hash(text) % self.dim] = 1.0
+            v[self.mapping.get(text, 3)] = 1.0
             vecs.append(v)
         class R:
             status_code = 200
@@ -64,15 +65,45 @@ async def test_index_and_retrieve_roundtrip(tmp_path):
     store.get_or_create_session("sess-a", 1000)
     t1 = store.append_user_turn("sess-a", "私の好物はカレーライスです", 1000, "popover")
     lock = asyncio.Lock()
-    fake = _FakeEmbedClient()
+    # 質問と記憶は別テキスト (完全一致は自己エコーとして除外される仕様のため)
+    fake = _FakeEmbedClient(mapping={"私の好物はカレーライスです": 0, "夕飯のおすすめある": 1})
 
     ok = await rag.index_turn(store, lock, t1, "sess-a", "私の好物はカレーライスです",
                               config=cfg, client_factory=lambda: fake)
     assert ok is True
 
-    hits = await rag.retrieve(store, "私の好物はカレーライスです", config=cfg,
+    hits = await rag.retrieve(store, "夕飯のおすすめある", config=cfg,
                               exclude_session_id="sess-b", client_factory=lambda: fake)
     assert hits == ["私の好物はカレーライスです"]
+
+
+async def test_identical_question_is_self_echo_filtered(tmp_path):
+    """過去のほぼ同一質問 turn は検索から除外される (質問が質問を引く問題の対策)。"""
+    cfg = _cfg(tmp_path)
+    store = Store(cfg.db_path, vec_dim=4)
+    store.get_or_create_session("sess-a", 1000)
+    t1 = store.append_user_turn("sess-a", "今日はいい天気ですねと言った", 1000, "popover")
+    lock = asyncio.Lock()
+    fake = _FakeEmbedClient(mapping={"今日はいい天気ですねと言った": 2})
+    await rag.index_turn(store, lock, t1, "sess-a", "今日はいい天気ですねと言った",
+                         config=cfg, client_factory=lambda: fake)
+    # 同一ベクトル (距離0) → turn は自己エコーとして落ちる
+    hits = await rag.retrieve(store, "今日はいい天気ですねと言った", config=cfg,
+                              exclude_session_id="sess-b", client_factory=lambda: fake)
+    assert hits == []
+
+
+async def test_index_turn_skips_questions(tmp_path):
+    """「?」「？」で終わる発話は索引しない。"""
+    cfg = _cfg(tmp_path)
+    store = Store(cfg.db_path, vec_dim=4)
+    store.get_or_create_session("sess-a", 1000)
+    lock = asyncio.Lock()
+    fake = _FakeEmbedClient()
+    ok = await rag.index_turn(store, lock, 999, "sess-a", "私の猫の名前を覚えてますか？",
+                              config=cfg, client_factory=lambda: fake)
+    assert ok is False
+    assert fake.calls == []  # embed すら呼ばない
 
     # 同一セッションは除外される(直近 replay と二重にならない)
     hits_same = await rag.retrieve(store, "私の好物はカレーライスです", config=cfg,

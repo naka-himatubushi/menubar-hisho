@@ -44,6 +44,8 @@ async def index_turn(store, write_lock, turn_id, session_id, content, *,
         return False
     if len(content) < 10:
         return False
+    if content.rstrip().endswith(("?", "？")):
+        return False  # 質問文は事実を含まず、後の検索で自己エコーになるだけ
     blobs = await embed([content], model=config.embed_model,
                         ollama_host=config.ollama_host, client_factory=client_factory)
     if not blobs:

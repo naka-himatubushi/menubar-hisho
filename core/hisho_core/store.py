@@ -184,19 +184,26 @@ class Store:
                       exclude_session_id: str | None = None) -> list[dict]:
         """vec0 kNN → chunks join。exclude_session_id は現在の会話(直近 replay 済)を除くため。"""
         rows = self.conn.execute(
-            "SELECT c.content, c.session_id, v.distance "
+            "SELECT c.content, c.session_id, c.source_type, v.distance "
             "FROM vec_chunks_bge_m3 v JOIN chunks c ON c.id = v.rowid "
             "WHERE v.embedding MATCH ? AND v.k = ? "
             "ORDER BY v.distance",
-            (query_vec, k + 8)).fetchall()  # 除外分を見込み多めに取る
+            (query_vec, k + 16)).fetchall()  # 除外・再ランク分を見込み多めに取る
         out = []
-        for content, session_id, distance in rows:
+        for content, session_id, source_type, distance in rows:
             if exclude_session_id is not None and session_id == exclude_session_id:
                 continue
-            out.append({"content": content, "session_id": session_id, "distance": distance})
-            if len(out) >= k:
-                break
-        return out
+            # 会話 turn の自己エコー除外: 過去のほぼ同一質問は情報ゼロ (質問が質問を引く問題)
+            if source_type == "turn" and distance < 0.15:
+                continue
+            out.append({"content": content, "session_id": session_id,
+                        "source_type": source_type, "distance": distance})
+        # 知識 (document/status 等) に最低 2 枠を保証し、残りは距離順で埋める。
+        # 距離ボーナス方式は長文知識が短文 turn に負けがちなため、枠の保証で確実にする。
+        knowledge = [h for h in out if h["source_type"] != "turn"]
+        reserved = knowledge[:min(2, k)]
+        rest = sorted((h for h in out if h not in reserved), key=lambda h: h["distance"])
+        return (reserved + rest)[:k]
 
     def unindexed_popover_turns(self, limit: int = 50) -> list[dict]:
         """未索引の popover complete ターン(10文字以上)を古い順に返す(backfill 用)。"""
@@ -205,6 +212,7 @@ class Store:
             "LEFT JOIN chunks c ON c.source_type='turn' AND c.source_id = t.id "
             "WHERE c.id IS NULL AND t.status='complete' "
             "  AND length(t.content) >= 10 "
+            "  AND t.content NOT LIKE '%?' AND t.content NOT LIKE '%？' "
             "  AND json_extract(t.meta, '$.source') = 'popover' "
             "ORDER BY t.id LIMIT ?", (limit,)).fetchall()
         return [{"id": r[0], "session_id": r[1], "content": r[2]} for r in rows]
