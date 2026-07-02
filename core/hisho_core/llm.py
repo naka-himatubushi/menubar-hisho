@@ -21,7 +21,7 @@ async def iter_ollama_events(raw_lines: AsyncIterator[bytes]) -> AsyncIterator[d
         raw_lines: Ollama ストリーミングレスポンスの bytes 行
 
     Yields:
-        dict: {"type":"delta","content":str} | {"type":"done","finish_reason":str,"eval_count":int|None} | {"type":"error","message":str}
+        dict: {"type":"delta","content":str} | {"type":"tool_call","id":str|None,"name":str|None,"arguments":dict} | {"type":"done","finish_reason":str,"eval_count":int|None} | {"type":"error","message":str}
     """
     async for raw in raw_lines:
         line = raw.decode("utf-8", "replace").strip()
@@ -37,6 +37,13 @@ async def iter_ollama_events(raw_lines: AsyncIterator[bytes]) -> AsyncIterator[d
 
         # message.content から delta イベントを生成（thinking は無視）
         msg = obj.get("message") or {}
+
+        # message.tool_calls から tool_call イベントを生成
+        for tc in (msg.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            yield {"type": "tool_call", "id": tc.get("id"),
+                   "name": fn.get("name"), "arguments": fn.get("arguments") or {}}
+
         content = msg.get("content") or ""
         if content:
             yield {"type": "delta", "content": content}
@@ -61,7 +68,7 @@ async def _as_bytes(aiter_str):
 
 
 async def chat_stream(messages, *, model, ollama_host, num_ctx, keep_alive,
-                      think: bool = False, client_factory=None):
+                      think: bool = False, tools=None, client_factory=None):
     """
     Ollama /api/chat にストリーミング POST を送り、イベントを yield。
 
@@ -72,10 +79,11 @@ async def chat_stream(messages, *, model, ollama_host, num_ctx, keep_alive,
         num_ctx: context window size
         keep_alive: keep alive duration (e.g. "30m")
         think: enable thinking mode
+        tools: optional Ollama tools 定義のリスト (None/空なら body に含めない)
         client_factory: optional async client factory (default: httpx.AsyncClient with custom timeout)
 
     Yields:
-        dict: events from iter_ollama_events (delta, done, error)
+        dict: events from iter_ollama_events (delta, tool_call, done, error)
     """
     body = {
         "model": model,
@@ -85,6 +93,8 @@ async def chat_stream(messages, *, model, ollama_host, num_ctx, keep_alive,
         "keep_alive": keep_alive,
         "options": {"num_ctx": num_ctx},
     }
+    if tools:
+        body["tools"] = tools
     factory = client_factory or (lambda: httpx.AsyncClient(
         timeout=httpx.Timeout(connect=5.0, read=None, write=5.0, pool=5.0)))
     client = factory()
