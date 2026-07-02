@@ -34,7 +34,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         keep_alive=e.get("HISHO_KEEP_ALIVE", "30m"),
         embed_model=e.get("HISHO_EMBED_MODEL", "bge-m3"),
         rag_enabled=e.get("HISHO_RAG", "1") == "1",
-        rag_top_k=int(e.get("HISHO_RAG_TOP_K", "3")),
+        rag_top_k=int(e.get("HISHO_RAG_TOP_K", "5")),
     )
 
 def ensure_db_dir(db_path: str) -> None:
