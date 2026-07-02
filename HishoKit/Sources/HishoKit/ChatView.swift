@@ -44,6 +44,14 @@ public struct ChatView: View {
                 Text(model).font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer()
+            Button(action: { chat.clear() }) {
+                Image(systemName: "square.and.pencil")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("新しい会話")
+            .disabled(chat.messages.isEmpty && !chat.isStreaming)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
