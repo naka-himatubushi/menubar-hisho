@@ -2,7 +2,13 @@
 
 > 次セッションで**そのまま再開**するための地図。詳細は spec/plan/ledger を参照。
 
-## 現在地 (2026-07-02 更新)
+## 現在地 (2026-07-02 更新2)
+
+- **Plan 3 (RAG 長期記憶) = 完成・main マージ済 (120a31f)**。sqlite-vec v2 スキーマ + bge-m3 (ollama /api/embed) + popover 経路への記憶注入 + fire-and-forget 索引 + 起動時 backfill。56 py tests + 26 swift tests。
+- E2E 実測: 別セッションから「猫の名前=モチ」想起成功 / external 非汚染 / egress ゼロ。plan: `docs/superpowers/plans/2026-07-02-hisho-rag-memory.md`
+- RAG 落とし穴: 索引対象は popover の complete ターン (10 文字以上) のみ。`HISHO_RAG=0` で無効化可。vec0 孤児 rowid はスレ削除時に残る (rebuild で掃除 — 運用課題)。
+
+## 旧: Plan 2 時点の現在地
 
 - ブランチ **feature/plan2-swift-shell** / **Plan 2 実装完了・E2E 自動チェック済 / main 未マージ**。
 - Python 41 tests + Swift 26 tests green。実 .app でチャット往復・relocation・kill -9 親→core 自死・egress ゼロ確認済。
