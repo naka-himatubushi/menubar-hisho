@@ -36,10 +36,22 @@ def test_no_forget_keyword_passes_no_tools(tmp_path):
     assert calls["tools_seen"][0] is None  # 忘却語なし → tools 渡さない
 
 
-def test_forget_keyword_runs_tool_and_appends_deterministic_line(tmp_path):
+def test_external_source_never_gets_tools_even_with_keyword(tmp_path):
+    """破壊ツールは popover 経路限定。external から忘却語で来ても tools を渡さない (安全)。"""
     store = Store(str(tmp_path / "t.db"))
-    if not store.rag_enabled:
-        return
+    chat_fn, calls = _make_chat_fn([[{"type": "delta", "content": "ok"}, {"type": "done", "finish_reason": "stop"}]])
+    app = create_app(store, load_config(), chat_fn=chat_fn,
+                     probe_fn=lambda: _ok_probe(), warmup_fn=_true, unload_fn=_true)
+    with TestClient(app) as c:
+        r = c.post("/v1/chat/completions", json={"session_id": "sx", "messages": [{"role": "user", "content": "猫のこと忘れて"}]},
+                   headers={"X-Hisho-Source": "external"})
+        assert r.status_code == 200
+    assert calls["tools_seen"][0] is None  # external → 忘却語があっても tools なし
+
+
+def test_forget_keyword_runs_tool_and_appends_deterministic_line(tmp_path):
+    # fake_forget を注入するので RAG 依存なし → rag_enabled ガードは不要 (M3 assert を常に走らせる)
+    store = Store(str(tmp_path / "t.db"))
     # 1回目: tool_call を返す / 2回目: 最終回答
     script = [
         [{"type": "tool_call", "id": "c1", "name": "forget_memories", "arguments": {"query": "猫"}},
@@ -69,9 +81,7 @@ def test_tool_call_every_round_terminates_with_stop(tmp_path):
     """モデルが毎回 tool_call を返し続ける (最終回答を出さない) 場合でも
     MAX_TOOL_ITERS で打ち切られ、finish_reason は "tool_calls" のまま
     クライアントへ漏れず "stop" に正規化される (Important #1)。"""
-    store = Store(str(tmp_path / "t.db"))
-    if not store.rag_enabled:
-        return
+    store = Store(str(tmp_path / "t.db"))  # fake_forget 注入で RAG 不要
     # 常に forget_memories を呼び続けるスクリプト (毎ラウンド同じ)
     round_events = [
         {"type": "tool_call", "id": "cX", "name": "forget_memories", "arguments": {"query": "猫"}},
