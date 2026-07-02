@@ -9,7 +9,7 @@ struct HishoApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        MenuBarExtra("Hisho", systemImage: "person.crop.circle") {
+        MenuBarExtra("JARVIS", systemImage: "mustache.fill") {
             ChatView(chat: AppRuntime.shared.chat, core: AppRuntime.shared.core)
         }
         .menuBarExtraStyle(.window)

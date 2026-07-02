@@ -23,7 +23,8 @@ public struct HTTPHealthProber: HealthProbing {
         let model = obj["model"] as? [String: Any]
         return HealthSnapshot(
             ollamaReachable: ollama?["reachable"] as? Bool ?? false,
-            modelLoaded: model?["loaded"] as? Bool ?? false)
+            modelLoaded: model?["loaded"] as? Bool ?? false,
+            modelName: model?["name"] as? String)
     }
 }
 

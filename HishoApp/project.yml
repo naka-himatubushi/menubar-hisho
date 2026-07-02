@@ -22,7 +22,7 @@ targets:
       path: Info.plist
       properties:
         CFBundleName: Hisho
-        CFBundleDisplayName: Hisho
+        CFBundleDisplayName: JARVIS
         LSUIElement: true            # Dock に出さないメニューバー常駐
         LSMinimumSystemVersion: "26.0"
         NSAppTransportSecurity:

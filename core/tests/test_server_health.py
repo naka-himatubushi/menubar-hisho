@@ -29,6 +29,7 @@ async def test_healthz_layered(tmp_path):
         assert j["core"] is True
         assert j["ollama"]["reachable"] is True and j["ollama"]["version"] == "0.31.1"
         assert j["model"]["present"] is True and j["model"]["loaded"] is False
+        assert j["model"]["name"] == "qwen3.6:35b-a3b"  # UI がヘッダに表示する
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,8 @@ public struct CoreLaunchConfig: Sendable {
 public final class CoreProcessManager {
     public private(set) var state: CoreState = .coreStopped(reason: "未起動")
     public private(set) var port: Int
+    /// healthz が返す稼働モデル名(UI ヘッダ表示用)。
+    public private(set) var modelName: String?
 
     private let config: CoreLaunchConfig
     private let prober: any HealthProbing
@@ -158,6 +160,7 @@ public final class CoreProcessManager {
             port = cj.port  // :0 fallback 時はここで実ポートに追随
         }
         let health = await prober.probe(port: port)
+        if let name = health?.modelName { modelName = name }
         let elapsed = launchedAt.map {
             let c = (ContinuousClock.now - $0).components
             return Double(c.seconds) + Double(c.attoseconds) * 1e-18  // 小数秒を捨てない

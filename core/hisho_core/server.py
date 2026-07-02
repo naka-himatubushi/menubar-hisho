@@ -143,7 +143,8 @@ def create_app(
         return {
             "core": True,
             "ollama": {"reachable": p["reachable"], "version": p["version"]},
-            "model": {"present": p["model_present"], "loaded": p["model_loaded"]},
+            "model": {"present": p["model_present"], "loaded": p["model_loaded"],
+                      "name": config.chat_model},
         }
 
     @app.get("/v1/models")

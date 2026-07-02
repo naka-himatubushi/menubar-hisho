@@ -32,9 +32,11 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
 public struct HealthSnapshot: Equatable, Sendable {
     public var ollamaReachable: Bool
     public var modelLoaded: Bool
+    public var modelName: String?
 
-    public init(ollamaReachable: Bool, modelLoaded: Bool) {
+    public init(ollamaReachable: Bool, modelLoaded: Bool, modelName: String? = nil) {
         self.ollamaReachable = ollamaReachable
         self.modelLoaded = modelLoaded
+        self.modelName = modelName
     }
 }

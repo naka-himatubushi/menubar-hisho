@@ -33,10 +33,16 @@ public struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            Text("Hisho").font(.headline)
+            Image(systemName: "mustache.fill")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text("JARVIS").font(.headline)
             Circle()
                 .fill(statusColor)
                 .frame(width: 8, height: 8)
+            if let model = core.modelName {
+                Text(model).font(.caption2).foregroundStyle(.tertiary)
+            }
             Spacer()
         }
         .padding(.horizontal, 12)
@@ -54,7 +60,7 @@ public struct ChatView: View {
     private var emptyState: some View {
         VStack(spacing: 8) {
             Spacer()
-            Image(systemName: "person.crop.circle")
+            Image(systemName: "mustache.fill")
                 .font(.system(size: 40))
                 .foregroundStyle(.tertiary)
             Text("何でも聞いてください")
