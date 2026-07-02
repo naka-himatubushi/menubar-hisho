@@ -200,8 +200,11 @@ class Store:
                         "source_type": source_type, "distance": distance})
         # 知識 (document/status 等) に最低 2 枠を保証し、残りは距離順で埋める。
         # 距離ボーナス方式は長文知識が短文 turn に負けがちなため、枠の保証で確実にする。
+        # status (現況ドキュメント) は鮮度が命 — 候補に居れば距離に関わらず必ず先頭 1 枠を取る。
         knowledge = [h for h in out if h["source_type"] != "turn"]
-        reserved = knowledge[:min(2, k)]
+        status = [h for h in knowledge if h["source_type"] == "status"][:1]
+        docs = [h for h in knowledge if h["source_type"] != "status"]
+        reserved = (status + docs)[:min(2, k)]
         rest = sorted((h for h in out if h not in reserved), key=lambda h: h["distance"])
         return (reserved + rest)[:k]
 

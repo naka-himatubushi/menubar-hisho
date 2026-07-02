@@ -101,3 +101,15 @@ def test_unindexed_skips_questions(tmp_path):
     s.append_user_turn("sess-a", "what is my cat name?", 2000, "popover")
     t3 = s.append_user_turn("sess-a", "猫の名前はモチといいます", 3000, "popover")
     assert [r["id"] for r in s.unindexed_popover_turns(10)] == [t3]
+
+
+def test_status_always_takes_first_slot(tmp_path):
+    """status は document より遠くても必ず含まれる (現況の鮮度優先)。"""
+    s = _store(tmp_path)
+    s.add_chunk("document", 1, None, "近い文書1", _vec(1, 0, 0, 0), "bge-m3", 4)
+    s.add_chunk("document", 2, None, "近い文書2", _vec(0.9, 0.1, 0, 0), "bge-m3", 4)
+    s.add_chunk("status", 1, None, "現在の状況", _vec(0, 0, 0, 1), "bge-m3", 4)
+
+    hits = s.search_chunks(_vec(1, 0, 0, 0), k=2)
+    assert hits[0]["source_type"] == "status"
+    assert hits[1]["content"] == "近い文書1"
