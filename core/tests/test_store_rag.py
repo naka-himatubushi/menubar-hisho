@@ -15,7 +15,7 @@ def test_migration_v2_and_rag_enabled(tmp_path):
     s = _store(tmp_path)
     assert s.rag_enabled is True
     ver = s.conn.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 2
+    assert ver >= 3
     tables = {r[0] for r in s.conn.execute(
         "SELECT name FROM sqlite_master WHERE type IN ('table','virtual table') OR type='table'")}
     assert {"chunks", "embeddings"} <= tables

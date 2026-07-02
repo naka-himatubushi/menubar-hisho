@@ -2,6 +2,23 @@
 
 > 次セッションで**そのまま再開**するための地図。詳細は spec / plans / メモリを参照。
 
+## ⚡ 2026-07-03 追記: forget ツール (Plan 4 スライス1) 進行中
+
+ブランチ **`feat/forget-tool`** (main +13 commits、**未マージ**)。`.superpowers/sdd/progress.md` に詳細台帳。
+
+**状態: 機構は完成・78 tests green。ただし実 Ollama 信頼性に設計判断が残る (未マージ)。**
+
+- 実装: 7タスク全完了 (migration v3 / store 3メソッド / tools.py / llm tool イベント / server ツールループ+M2ゲート+M3決定的報告+H1索引スキップ / persona精密化 / スモーク)。SDD サブエージェント駆動。
+- レビューで潰した実バグ: use_tools 閉包スコープ欠陥、finish正規化/未知ツールログ/tool例外exc_info、**Critical=H1索引スキップが forget 失敗パス(embed失敗/例外)で漏れ→§1汚染再発** (tool_used_forget フラグで修正)、silent cap、H1 server テスト皆無。
+- 校正: **FORGET_THRESHOLD 0.40→0.85** 適用済 (実測 bge-m3 L2非正規化で「猫」直接一致≈0.82・無関係≈0.91+。0.40 では何も消えなかった)。
+- **🔴 未解決の設計判断 = tool-calling 信頼性:**
+  - 単発 e2e (実Ollama+実DB) は tool 発火時 soft-delete/retrieve消失/H1/M1 全て成立。機構は正しい。
+  - **信頼性は prompt hygiene 依存**: qwen3.6:35b-a3b は「初回発話が忘れて」+フル persona で **17%** しか発火せず (非発火時「削除しました」と作文=§1幻覚再現)。だが短い persona / 正規会話形状 [user→assistant→user] では **100%**。孤立呼び出し 12/12。→ **モデルの素の限界でなく、饒舌 persona (平文/Markdown禁止/箇条書き整形指示) が tool-calling を抑制**しているのが主因。
+  - 注意: e2e で観測した [user,user] 2連 (発火悪化) は**テスト seed が assistant 返事なしで作った歪み**。本番は user→assistant ペアなので実リスクは「初回forget+フルpersona」に限定。
+  - **次アクション候補 (要オーナー判断)**: (a) **Approach C** = M2ゲート一致時 server が forget を直接実行 (モデル発火非依存・100%保証・spec §8 事前承認)。(b) persona 短縮のみで再計測。(c) 大きいモデル(gpt-oss:120b等)で prompt hygiene 感度を再計測。まず **seed を assistant 返事付き(本番相当)で作り直して発火率を再測定**するのが筋。
+  - 派生アイデア: num_ctx 予算超過前に JARVIS が「会話長い、新スレッドにする?」とリマインドする機能 (別スライス)。
+- 検証スクリプト (使い捨て): `~/.claude/jobs/ec2c4c74/tmp/{smoke_forget,e2e_forget,reliability,rootcause,pinpoint,calibrate_threshold}.py`
+
 ## 現在地
 
 - ブランチ **main** / working tree clean / **Python 62 tests + Swift 26 tests green**
