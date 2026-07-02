@@ -8,7 +8,7 @@ def test_schema_and_pragmas(tmp_path):
     tables = {r[0] for r in s.conn.execute(
         "SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
     assert {"sessions", "turns", "turns_fts"} <= tables
-    assert s.user_version() == 1
+    assert s.user_version() >= 1  # v2 以降も許容 (RAG 移行により user_version=2)
     s.close()
 
 
@@ -16,5 +16,5 @@ def test_idempotent_open(tmp_path):
     p = str(tmp_path / "t.db")
     Store(p).close()
     s = Store(p)  # 再オープンで壊れない
-    assert s.user_version() == 1
+    assert s.user_version() >= 1  # v2 以降も許容 (RAG 移行により user_version=2)
     s.close()
