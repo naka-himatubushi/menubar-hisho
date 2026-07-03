@@ -60,7 +60,7 @@ public struct ChatView: View {
             }
             .buttonStyle(.plain)
             .help("モデルの電源")
-            .disabled(core.state == .warmingModel || core.state == .startingCore)
+            .disabled(core.state != .ready && core.state != .idle)  // トグル可能なのは ready/idle のみ
             Button(action: { chat.clear() }) {
                 Image(systemName: "square.and.pencil")
                     .font(.subheadline)

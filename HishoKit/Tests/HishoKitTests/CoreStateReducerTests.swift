@@ -64,4 +64,15 @@ import Testing
             manuallyUnloaded: false)
         #expect(s == .warmingModel)
     }
+
+    @Test func loadedWinsOverManuallyUnloadedFlag() {
+        // modelLoaded が最優先: フラグが立っていてもロード済なら .ready
+        // (フラグ判定を loaded 判定より前に動かす回帰を検出する)
+        let s = CoreStateReducer.derive(
+            processRunning: true,
+            health: HealthSnapshot(ollamaReachable: true, modelLoaded: true),
+            secondsSinceLaunch: 5, startupTimeout: 20,
+            manuallyUnloaded: true)
+        #expect(s == .ready)
+    }
 }

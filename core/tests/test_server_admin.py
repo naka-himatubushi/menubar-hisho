@@ -62,6 +62,7 @@ async def test_unload_endpoint_returns_false_when_unload_fails(tmp_path):
         r = await c.post("/v1/admin/model/unload")
     assert r.status_code == 200
     assert r.json() == {"unloaded": False}
+    assert calls["unload"] == 1  # ハードコードでなく実際に unload_fn を呼んでいる
 
 
 @pytest.mark.asyncio
@@ -73,3 +74,4 @@ async def test_load_endpoint_returns_false_when_warmup_fails(tmp_path):
         r = await c.post("/v1/admin/model/load")
     assert r.status_code == 200
     assert r.json() == {"loaded": False}
+    assert calls["warmup"] == 1  # ハードコードでなく実際に warmup_fn を呼んでいる

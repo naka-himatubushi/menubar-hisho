@@ -107,8 +107,11 @@ public final class CoreProcessManager {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 5
-        guard let (_, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+        // body の {"unloaded": true} まで確認 (HTTP 200 でも unload_fn が false を返す場合がある)。
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["unloaded"] as? Bool == true else { return }
         manuallyUnloaded = true
         state = .idle  // 楽観更新 — 次 poll で正確な状態に上書きされる
     }
