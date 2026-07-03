@@ -6,7 +6,7 @@ def test_defaults():
     c = load_config(env={})
     assert c.port == 51100
     assert c.ollama_host == "http://127.0.0.1:11434"
-    assert c.chat_model == "qwen3.6:35b-a3b"
+    assert c.chat_model == "gemma4:26b-a4b-it-q8_0"
     assert c.num_ctx == 8192
     assert c.db_path.endswith("Library/Application Support/Hisho/secretary.db")
     assert c.response_reserve == 1024
