@@ -356,4 +356,16 @@ def create_app(
             return {"sessions": await anyio.to_thread.run_sync(store.list_sessions, 100)}
         return {"session_id": session_id, "turns": await anyio.to_thread.run_sync(store.recent_turns, session_id, 500)}
 
+    @app.post("/v1/admin/model/unload")
+    async def model_unload():
+        """モデルを手動アンロードして VRAM を即時解放。unload_fn を呼び出し結果を返す。"""
+        ok = await app.state.unload_fn()
+        return {"unloaded": bool(ok)}
+
+    @app.post("/v1/admin/model/load")
+    async def model_load():
+        """モデルを手動ロード(VRAM 先読み)。warmup_fn を呼び出し結果を返す。"""
+        ok = await app.state.warmup_fn()
+        return {"loaded": bool(ok)}
+
     return app

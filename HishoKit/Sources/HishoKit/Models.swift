@@ -1,11 +1,13 @@
 // 役割: HishoKit 全体で共有する値型 — core の状態・チャットメッセージ・healthz スナップショット。
 import Foundation
 
-/// Swift 殻から見た core の 5 状態(spec §3 の状態表示)。
+/// Swift 殻から見た core の 6 状態(spec §3 の状態表示)。
 public enum CoreState: Equatable, Sendable {
     case startingCore
     case warmingModel
     case ready
+    /// ユーザーが手動でモデルをアンロードした状態。core + ollama は稼働中、再ロード待ち。
+    case idle
     case ollamaDown
     case coreStopped(reason: String)
 }

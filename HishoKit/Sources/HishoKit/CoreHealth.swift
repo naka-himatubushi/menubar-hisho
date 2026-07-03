@@ -28,10 +28,14 @@ public struct HTTPHealthProber: HealthProbing {
     }
 }
 
-/// 観測事実(プロセス生死・healthz・経過秒)から表示状態を導く。I/O なし。
+/// 観測事実(プロセス生死・healthz・経過秒・手動アンロードフラグ)から表示状態を導く。I/O なし。
 public enum CoreStateReducer {
+    /// - Parameters:
+    ///   - manuallyUnloaded: ユーザーが電源ボタンでアンロードを指示した直後 true。
+    ///     モデルがロード済みと確認できたタイミングで CoreProcessManager が false にリセットする。
     public static func derive(processRunning: Bool, health: HealthSnapshot?,
-                              secondsSinceLaunch: Double, startupTimeout: Double) -> CoreState {
+                              secondsSinceLaunch: Double, startupTimeout: Double,
+                              manuallyUnloaded: Bool = false) -> CoreState {
         guard processRunning else { return .coreStopped(reason: "core プロセスが終了") }
         guard let health else {
             return secondsSinceLaunch > startupTimeout
@@ -39,6 +43,7 @@ public enum CoreStateReducer {
                 : .startingCore
         }
         guard health.ollamaReachable else { return .ollamaDown }
-        return health.modelLoaded ? .ready : .warmingModel
+        if health.modelLoaded { return .ready }
+        return manuallyUnloaded ? .idle : .warmingModel
     }
 }

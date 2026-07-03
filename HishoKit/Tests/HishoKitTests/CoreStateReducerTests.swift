@@ -1,4 +1,4 @@
-// 役割: 5 状態導出の全分岐 — プロセス死/応答なし(タイムアウト前後)/ollama down/warming/ready。
+// 役割: 6 状態導出の全分岐 — プロセス死/応答なし(タイムアウト前後)/ollama down/warming/ready/idle。
 import Testing
 @testable import HishoKit
 
@@ -43,5 +43,25 @@ import Testing
             health: HealthSnapshot(ollamaReachable: true, modelLoaded: true),
             secondsSinceLaunch: 5, startupTimeout: 20)
         #expect(s == .ready)
+    }
+
+    // --- 電源ボタン: manuallyUnloaded フラグの分岐 ---
+
+    @Test func reachableNotLoadedManuallyUnloadedIsIdle() {
+        let s = CoreStateReducer.derive(
+            processRunning: true,
+            health: HealthSnapshot(ollamaReachable: true, modelLoaded: false),
+            secondsSinceLaunch: 5, startupTimeout: 20,
+            manuallyUnloaded: true)
+        #expect(s == .idle)
+    }
+
+    @Test func reachableNotLoadedNotManuallyUnloadedIsWarming() {
+        let s = CoreStateReducer.derive(
+            processRunning: true,
+            health: HealthSnapshot(ollamaReachable: true, modelLoaded: false),
+            secondsSinceLaunch: 5, startupTimeout: 20,
+            manuallyUnloaded: false)
+        #expect(s == .warmingModel)
     }
 }
