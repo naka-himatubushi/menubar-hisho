@@ -44,6 +44,23 @@ public struct ChatView: View {
                 Text(model).font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer()
+            // 電源ボタン: ready=緑(ON) / idle=グレー(OFF) / 遷移中=オレンジ+無効
+            Button(action: {
+                Task {
+                    if core.state == .ready {
+                        await core.unloadModel()
+                    } else if core.state == .idle {
+                        await core.loadModel()
+                    }
+                }
+            }) {
+                Image(systemName: "power")
+                    .font(.subheadline)
+                    .foregroundStyle(powerButtonColor)
+            }
+            .buttonStyle(.plain)
+            .help("モデルの電源")
+            .disabled(core.state != .ready && core.state != .idle)  // トグル可能なのは ready/idle のみ
             Button(action: { chat.clear() }) {
                 Image(systemName: "square.and.pencil")
                     .font(.subheadline)
@@ -57,10 +74,20 @@ public struct ChatView: View {
         .padding(.vertical, 8)
     }
 
+    private var powerButtonColor: Color {
+        switch core.state {
+        case .ready: .green
+        case .idle: .gray
+        case .warmingModel, .startingCore: .orange
+        case .ollamaDown, .coreStopped: .red
+        }
+    }
+
     private var statusColor: Color {
         switch core.state {
         case .ready: .green
         case .startingCore, .warmingModel: .orange
+        case .idle: .gray
         case .ollamaDown, .coreStopped: .red
         }
     }
@@ -119,9 +146,10 @@ public struct ChatView: View {
     }
 
     private var canSend: Bool {
-        // warmingModel でも送れる: ollama はリクエストで自動再ロードするため(初回だけ遅い)。
-        // 30 分アイドルで unload された後もアプリ再起動なしで会話を再開できる。
-        (core.state == .ready || core.state == .warmingModel) && !chat.isStreaming
+        // warmingModel / idle でも送れる: ollama はリクエストで自動再ロードするため(初回だけ遅い)。
+        // 30 分アイドルや手動アンロード後もアプリ再起動なしで会話を再開できる。
+        (core.state == .ready || core.state == .warmingModel || core.state == .idle)
+            && !chat.isStreaming
     }
 
     private var sendEnabled: Bool {
@@ -145,6 +173,8 @@ struct StatusBanner: View {
         switch state {
         case .ready:
             EmptyView()
+        case .idle:
+            banner("モデル停止中 — 電源ボタンか送信で再開", tint: .secondary, showSpinner: false)
         case .startingCore:
             banner("秘書を起動中…", tint: .secondary)
         case .warmingModel:
@@ -162,9 +192,9 @@ struct StatusBanner: View {
         }
     }
 
-    private func banner(_ text: String, tint: Color) -> some View {
+    private func banner(_ text: String, tint: Color, showSpinner: Bool = true) -> some View {
         HStack {
-            ProgressView().controlSize(.small)
+            if showSpinner { ProgressView().controlSize(.small) }
             Text(text).font(.caption).foregroundStyle(tint)
             Spacer()
         }

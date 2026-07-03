@@ -40,6 +40,9 @@ public final class CoreProcessManager {
     public private(set) var port: Int
     /// healthz が返す稼働モデル名(UI ヘッダ表示用)。
     public private(set) var modelName: String?
+    /// ユーザーが電源ボタンでアンロードを指示した直後 true。
+    /// pollが modelLoaded=true を検出したタイミングで false にリセットする。
+    public private(set) var manuallyUnloaded = false
 
     private let config: CoreLaunchConfig
     private let prober: any HealthProbing
@@ -94,6 +97,34 @@ public final class CoreProcessManager {
     public func restart() {
         stop()
         start()
+    }
+
+    // MARK: - 電源ボタン操作
+
+    /// モデルを手動アンロード。POST /v1/admin/model/unload を呼び、成功時に状態を .idle に遷移。
+    public func unloadModel() async {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/v1/admin/model/unload") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 5
+        // body の {"unloaded": true} まで確認 (HTTP 200 でも unload_fn が false を返す場合がある)。
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["unloaded"] as? Bool == true else { return }
+        manuallyUnloaded = true
+        state = .idle  // 楽観更新 — 次 poll で正確な状態に上書きされる
+    }
+
+    /// モデルを手動ロード(VRAM 先読み)。POST /v1/admin/model/load を呼び、次 poll で .ready に遷移。
+    public func loadModel() async {
+        manuallyUnloaded = false
+        guard let url = URL(string: "http://127.0.0.1:\(port)/v1/admin/model/load") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 60  // warmup は初回数十秒かかる場合がある
+        _ = try? await URLSession.shared.data(for: req)
+        // 状態更新は次 poll に委ねる(tick が modelLoaded を検出して .ready に遷移)
     }
 
     // MARK: - internals
@@ -161,13 +192,16 @@ public final class CoreProcessManager {
         }
         let health = await prober.probe(port: port)
         if let name = health?.modelName { modelName = name }
+        // モデルが(他の手段でも)ロードされたことを検出したらフラグをリセット
+        if health?.modelLoaded == true { manuallyUnloaded = false }
         let elapsed = launchedAt.map {
             let c = (ContinuousClock.now - $0).components
             return Double(c.seconds) + Double(c.attoseconds) * 1e-18  // 小数秒を捨てない
         } ?? 0
         let next = CoreStateReducer.derive(
             processRunning: p.isRunning, health: health,
-            secondsSinceLaunch: elapsed, startupTimeout: config.startupTimeout)
+            secondsSinceLaunch: elapsed, startupTimeout: config.startupTimeout,
+            manuallyUnloaded: manuallyUnloaded)
         if case .coreStopped(let reason) = next {
             stopping = true                    // 先にセット: terminationHandler の「予期せず」上書きを抑止
             if p.isRunning { p.terminate() }  // 起動タイムアウトで固まった子を回収
