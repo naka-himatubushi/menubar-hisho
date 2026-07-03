@@ -12,7 +12,7 @@ def _app(tmp_path):
     async def probe():
         return {"reachable": True, "version": "0.31.1",
                 "model_present": True, "model_loaded": False,
-                "models": ["gemma4:26b-a4b-it-q8_0"]}
+                "models": ["gemma4:12b"]}
     return create_app(store, cfg, chat_fn=None, probe_fn=probe)
 
 
@@ -29,7 +29,7 @@ async def test_healthz_layered(tmp_path):
         assert j["core"] is True
         assert j["ollama"]["reachable"] is True and j["ollama"]["version"] == "0.31.1"
         assert j["model"]["present"] is True and j["model"]["loaded"] is False
-        assert j["model"]["name"] == "gemma4:26b-a4b-it-q8_0"  # UI がヘッダに表示する
+        assert j["model"]["name"] == "gemma4:12b"  # UI がヘッダに表示する
 
 
 @pytest.mark.asyncio
@@ -38,4 +38,4 @@ async def test_models_list(tmp_path):
     async with await _client(app) as c:
         r = await c.get("/v1/models")
         ids = [m["id"] for m in r.json()["data"]]
-        assert "gemma4:26b-a4b-it-q8_0" in ids
+        assert "gemma4:12b" in ids
