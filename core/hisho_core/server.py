@@ -360,12 +360,14 @@ def create_app(
     async def model_unload():
         """モデルを手動アンロードして VRAM を即時解放。unload_fn を呼び出し結果を返す。"""
         ok = await app.state.unload_fn()
+        app.state._probe_cache["v"] = None  # healthz が古い loaded=true を返さないよう即無効化
         return {"unloaded": bool(ok)}
 
     @app.post("/v1/admin/model/load")
     async def model_load():
         """モデルを手動ロード(VRAM 先読み)。warmup_fn を呼び出し結果を返す。"""
         ok = await app.state.warmup_fn()
+        app.state._probe_cache["v"] = None  # healthz が古い loaded=false を返さないよう即無効化
         return {"loaded": bool(ok)}
 
     return app

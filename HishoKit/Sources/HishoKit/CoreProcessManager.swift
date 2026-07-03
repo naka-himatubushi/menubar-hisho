@@ -192,8 +192,9 @@ public final class CoreProcessManager {
         }
         let health = await prober.probe(port: port)
         if let name = health?.modelName { modelName = name }
-        // モデルが(他の手段でも)ロードされたことを検出したらフラグをリセット
-        if health?.modelLoaded == true { manuallyUnloaded = false }
+        // manuallyUnloaded は「ユーザーが電源オフした意図」。healthz(3秒キャッシュ + ollama の
+        // アンロード遅延で数秒ズレる)の loaded で誤リセットしない。ロード済の表示は reducer の
+        // loaded 優先分岐が担保し、フラグは loadModel()(電源オン)でのみクリアする。
         let elapsed = launchedAt.map {
             let c = (ContinuousClock.now - $0).components
             return Double(c.seconds) + Double(c.attoseconds) * 1e-18  // 小数秒を捨てない
