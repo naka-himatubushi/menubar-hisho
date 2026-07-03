@@ -1,77 +1,81 @@
-# Hisho (JARVIS) — セッション引き継ぎ (2026-07-02 終業時点)
+# Hisho (JARVIS) — セッション引き継ぎ (2026-07-03 終業時点)
 
 > 次セッションで**そのまま再開**するための地図。詳細は spec / plans / メモリを参照。
 
-## ⚡ 2026-07-03 追記: forget ツール (Plan 4 スライス1) 進行中
-
-ブランチ **`feat/forget-tool`** (main +13 commits、**未マージ**)。`.superpowers/sdd/progress.md` に詳細台帳。
-
-**状態: 機構は完成・78 tests green。ただし実 Ollama 信頼性に設計判断が残る (未マージ)。**
-
-- 実装: 7タスク全完了 (migration v3 / store 3メソッド / tools.py / llm tool イベント / server ツールループ+M2ゲート+M3決定的報告+H1索引スキップ / persona精密化 / スモーク)。SDD サブエージェント駆動。
-- レビューで潰した実バグ: use_tools 閉包スコープ欠陥、finish正規化/未知ツールログ/tool例外exc_info、**Critical=H1索引スキップが forget 失敗パス(embed失敗/例外)で漏れ→§1汚染再発** (tool_used_forget フラグで修正)、silent cap、H1 server テスト皆無。
-- 校正: **FORGET_THRESHOLD 0.40→0.85** 適用済 (実測 bge-m3 L2非正規化で「猫」直接一致≈0.82・無関係≈0.91+。0.40 では何も消えなかった)。
-- **🔴 未解決の設計判断 = tool-calling 信頼性:**
-  - 単発 e2e (実Ollama+実DB) は tool 発火時 soft-delete/retrieve消失/H1/M1 全て成立。機構は正しい。
-  - **信頼性は prompt hygiene 依存**: qwen3.6:35b-a3b は「初回発話が忘れて」+フル persona で **17%** しか発火せず (非発火時「削除しました」と作文=§1幻覚再現)。だが短い persona / 正規会話形状 [user→assistant→user] では **100%**。孤立呼び出し 12/12。→ **モデルの素の限界でなく、饒舌 persona (平文/Markdown禁止/箇条書き整形指示) が tool-calling を抑制**しているのが主因。
-  - 注意: e2e で観測した [user,user] 2連 (発火悪化) は**テスト seed が assistant 返事なしで作った歪み**。本番は user→assistant ペアなので実リスクは「初回forget+フルpersona」に限定。
-  - **次アクション候補 (要オーナー判断)**: (a) **Approach C** = M2ゲート一致時 server が forget を直接実行 (モデル発火非依存・100%保証・spec §8 事前承認)。(b) persona 短縮のみで再計測。(c) 大きいモデル(gpt-oss:120b等)で prompt hygiene 感度を再計測。まず **seed を assistant 返事付き(本番相当)で作り直して発火率を再測定**するのが筋。
-  - 派生アイデア: num_ctx 予算超過前に JARVIS が「会話長い、新スレッドにする?」とリマインドする機能 (別スライス)。
-- 検証スクリプト (使い捨て): `~/.claude/jobs/ec2c4c74/tmp/{smoke_forget,e2e_forget,reliability,rootcause,pinpoint,calibrate_threshold}.py`
-
 ## 現在地
 
-- ブランチ **main** / working tree clean / **Python 62 tests + Swift 26 tests green**
-- **Plan 1 (Python core) + Plan 2 (Swift 殻 + .app) + Plan 3 (RAG 長期記憶) = 全部完成・マージ済**
-- GitHub 公開済 (public, MIT)。全履歴 author は中立名義にクリーニング済 — **今後も実名・内部 IP・ホスト名をコミットしない**
-- アプリは JARVIS ブランド (髭アイコン) でメニューバー常駐稼働中。persona 個人化 + プロフィール/インフラ知識の種まき + バックアップ状況の定期収集 (launchd 毎日 9:00) まで運用中
+- ブランチ **main** / working tree clean / **Python 84 tests + Swift 30 tests green** / GitHub public に push 済
+- **Plan 1〜3 (core / Swift 殻 / RAG) + Plan 4 スライス1 (forget) + 新しい会話ボタン + 電源トグル = 全部完成・main マージ済**
+- **既定チャットモデル = `gemma4:12b`** (常駐 ~8.4GB。`HISHO_MODEL` env で上位モデルに切替可)。埋め込み = bge-m3
+- アプリは JARVIS ブランド (髭アイコン) でメニューバー常駐稼働中
+- 公開物に実名・内部 IP・ホスト名を書かない (author 中立、docs は「オーナー」表記)
 
 ## できていること (完成機能)
 
 1. チャット (MenuBarExtra popover、SSE 逐次描画、popover 破棄耐性、平文出力)
 2. 長期記憶 RAG (sqlite-vec + bge-m3): 別セッション想起・external 非汚染・status 現況優先・質問の自己エコー除外
-3. 秘書知識: プロフィール/プロジェクト/接続手順を種まき済 (`scripts/seed_memory.py` で追加可)
-4. バックアップ監視 (方式①): launchd 収集 → 記憶上書き → 「バックアップ大丈夫?」に機器別実測日時で回答。異常は先頭で警告・断定しない
-5. 自動アンロード対応 (30 分アイドル → 次の発話で自動再ロード、warming 中も送信可)
+3. 秘書知識の種まき (`scripts/seed_memory.py`、source_type='document')。追記で事実訂正も可 (例: 「JARVIS は MacBook 上の gemma4 で動く」を追記して誤認を修正)
+4. バックアップ監視: launchd 収集 → 記憶上書き → 機器別実測日時で回答
+5. **忘却 (Plan 4 スライス1)**: 「○○忘れて」で長期記憶を soft-delete。実 LLM で安全削除を実測検証済 (対象のみ削除・巻き添えなし・想起からも消滅・可逆)
+6. **新しい会話ボタン (📝)**: popover ヘッダ。画面クリア + 新スレッド (session_id 再生成)。SQLite の会話は残る
+7. **電源トグル (⏻)**: popover ヘッダ。モデルを手動アンロード (VRAM ~8GB 即解放) / ロード。30分アイドル自動アンロードに加えた手動制御
+
+## 🔑 forget の実 LLM 教訓 (重要・コードレビューでは捕捉できず実機スモークのみが暴いた)
+
+- **RAG memories に削除対象の事実が注入されると、ローカルモデルは forget ツールを呼ばず「消しました」と幻覚する** → 対策: forget 意図ターンは memories 注入をスキップ (`server.py` の is_forget)
+- **ローカルモデルの tool-calling は非決定的** (qwen3.6 は memories 無しでも ~25% 幻覚、gemma4 は素直に発火) → 対策: **モデルが呼ばなければ server が決定的に forget を実行するフォールバック** (`server._forget_query` で対象語抽出)。破壊操作を「必ず安全」にする要
+- keyword ゲートは imperative 形 (`忘れて|消して|消去|削除|覚えなくて`) で否定「忘れないで」を除外
+- **閾値**: bge-m3 未正規化 L2 で直接キーワード一致 ≈0.82、無関係 ≈1.0+ → `tools.FORGET_THRESHOLD=0.85` (自然文前提。「テスト事実:」等のプレフィックス付きは距離が上がり外れる)
+- **LLM ツール機能はコードレビューでなく実モデルスモークでしか検証できない**。別DB (`HISHO_DB`) + 別ポート (`HISHO_PORT`) で core を起動し curl で実測せよ
 
 ## 次の候補 (未着手)
 
-- **Plan 4 (本命): sensors + tool calling** — 「今すぐ確認して」でその場で実行 + 未実行ならバックアップ起動を JARVIS が実行。設計メモはメモリ側 (project_menubar_hisho / user_backup_infra)
-- UI 磨き / `/history` 画面 / 新規会話ボタン / SMAppService (ログイン起動) / ruri との検索精度比較
+- **Plan 4 スライス2: sensors** — 「今すぐバックアップ確認して/起動して」を JARVIS が実行 (tool-calling 基盤は完成済、あとは sensor ツールを `tools.REGISTRY` に足すだけ)
+- 電源トグルの磨き: OFF 直後に一瞬緑に光る (healthz 3秒キャッシュ + ollama アンロード遅延)。probe cache TTL 短縮 or optimistic 表示で解消可
+- keep_alive 短縮 (`HISHO_KEEP_ALIVE`) でアイドル時もメモリ解放 / gemma4:12b の品質が不足なら 26b-a4b に戻す
+- `/history` 画面 / SMAppService (ログイン起動)
 
 ## 再開手順
 
 ```bash
 cd ~/sandbox/menubar-hisho
-core/.venv/bin/python -m pytest core/tests/ -q                      # 62 passed
-cd HishoKit && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test  # 26 tests
-# アプリ再ビルド (core を変えた時):
+core/.venv/bin/python -m pytest core/tests/ -q                      # 84 passed
+cd HishoKit && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test  # 30 tests
+# アプリ再ビルド (core を変えた時は build_core.sh 必須):
 scripts/build_core.sh && cd HishoApp && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodegen generate && cd .. \
   && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project HishoApp/HishoApp.xcodeproj -scheme HishoApp -configuration Debug -derivedDataPath build/derived build \
   && open build/derived/Build/Products/Debug/Hisho.app
+# 実 LLM スモーク (別DB/別ポートで実データを汚さず):
+HISHO_DB=/tmp/smoke.db core/.venv/bin/python scripts/seed_memory.py "テスト事実..."
+tail -f /dev/null | HISHO_DB=/tmp/smoke.db HISHO_PORT=51199 core/.venv/bin/python -m hisho_core &
+curl -N -s -X POST http://127.0.0.1:51199/v1/chat/completions -H "X-Hisho-Source: popover" -d '{"session_id":"s","messages":[{"role":"user","content":"○○忘れて"}],"stream":true}'
 ```
 
 ## 落とし穴 (実測済・忘れると再度ハマる)
 
-- `swift test` / `xcodebuild` / `xcodegen` は **DEVELOPER_DIR 前置必須** (xcode-select が CLT のため)
-- **core を変更したら `scripts/build_core.sh` 再実行**してから .app リビルド (古いツリーを embed する事故を 1 回やった)
+- `swift test` / `xcodebuild` / `xcodegen` は **DEVELOPER_DIR 前置必須**
+- **core を変更したら `scripts/build_core.sh` 再実行**してから .app リビルド
 - core 単体を background 起動する時は `tail -f /dev/null |` 前置 (stdin 即 EOF → 自死)
-- RAG 教訓: 質問文は索引しない / 現況は status チャンクに一元化 (静的メモに状態を書かない) / 知識に検索枠保証
+- **healthz の probe は3秒キャッシュ** + ollama のアンロードは ~1秒遅延 → 電源トグル直後は healthz が実態とズレる (unload/load エンドポイントで cache 無効化して緩和済)
+- **sqlite-vec の vec0 (`vec_chunks_bge_m3`) は sqlite3 CLI で触れない** (module 無し) → 削除は Store 経由 (拡張ロード) で。chunks(id) + vec(rowid) + turns(id) の3系統を消す
+- RAG 教訓: 質問文は索引しない / 現況は status チャンクに一元化 / 忘却往復を再索引しない (H1)
+- JARVIS の自己認識 (使用モデル等) は DB の document チャンクに依存 → モデル変更時は自己紹介事実も更新 (追記 or forget)
 - 収集系の個人設定は repo 外 (`~/Library/Application Support/Hisho/backup_targets.json`)
 
 ## 開発ポリシー (この repo で固定)
 
-- plan=Opus / 実装=Sonnet サブエージェント (commit 禁止、controller がレビュー後コミット) / 設計段階で codex-review
-- **セッション運用: フェーズごとに本ファイルを更新して /clear。日常モデルは Opus 4.8、Fable は設計/難障害/最終レビューの日のみ**
-- 公開物に実名を書かない。UI の色/font は実機確認してから確定
+- plan=Opus/Fable / 実装=Sonnet サブエージェント / 設計段階で codex-review (usage limit 時は Fable セルフレビューで代替)
+- SDD (subagent-driven): タスクごとに実装→レビュー→ controller が commit。公開前に実名/IP/ホスト名をスクラブ + squash マージで履歴も clean
+- 公開物に実名を書かない。UI の色/font/挙動は実機確認してから確定 (電源トグルの ON バグは実機でしか出なかった)
 
 ## ファイル地図
 
 ```
-docs/specs/2026-07-01-hisho-chat-mvp-design.md      # 設計仕様 (15節)
-docs/superpowers/plans/2026-07-01-hisho-python-core.md   # Plan 1
-docs/superpowers/plans/2026-07-02-hisho-swift-shell.md   # Plan 2
-docs/superpowers/plans/2026-07-02-hisho-rag-memory.md    # Plan 3
-core/hisho_core/{config,store,context,sse,llm,server,lifecycle,rag,__main__}.py
-HishoKit/  HishoApp/  scripts/  core/SMOKE.md
+docs/specs/2026-07-01-hisho-chat-mvp-design.md           # 設計仕様 (Llama-macOS 参照コンセプト)
+docs/specs/2026-07-02-hisho-forget-tool-design.md        # forget 設計
+docs/superpowers/plans/2026-07-01..03-*.md               # Plan 1-3 + forget
+core/hisho_core/{config,store,context,sse,llm,server,lifecycle,rag,tools,__main__}.py
+  server.py: /v1/chat/completions (tool ループ+forget), /v1/admin/model/{load,unload}, /healthz, /history
+  tools.py:  forget_memories + REGISTRY (sensors はここに足す)
+HishoKit/  HishoApp/  scripts/{seed_memory,build_core}.py  core/SMOKE.md
 ```
