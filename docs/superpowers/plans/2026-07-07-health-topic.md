@@ -220,7 +220,7 @@ import json, shlex
 from pathlib import Path
 
 LEDGER = Path.home() / "Library" / "Application Support" / "Hisho" / "sensor_targets.json"
-MINI = "<mini-user>@<mini-tailnet-ip>"
+MINI = "<mini-user>@<mini-tailnet-ip>"  # 実値は repo に書かない (~/.ssh/config と台帳バックアップ参照)
 # ConnectTimeout 4 + curl max-time 3 = 最悪 7 秒 < COMMAND_TIMEOUT 8 秒 (レビュー指摘対応)
 SSH = f"ssh -o BatchMode=yes -o ConnectTimeout=4 {MINI} "
 
@@ -276,7 +276,7 @@ else:
         print("直近20件に朝レポートが見つかりません")
 '''
 
-CHANNEL = "<bulletin-board-channel-id>"
+CHANNEL = "<bulletin-board-channel-id>"  # 実値は repo に書かない (mini の運用メモ参照)
 CURL = (f'source ~/.secrets/.env; curl -s --max-time 3 '
         f'"https://discord.com/api/v10/channels/{CHANNEL}/messages?limit=20" '
         f'-H "Authorization: Bot ${{DISCORD_BOT_TOKEN}}"')
