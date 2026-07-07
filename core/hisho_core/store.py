@@ -244,6 +244,16 @@ class Store:
         rest = sorted((h for h in out if h not in reserved), key=lambda h: h["distance"])
         return (reserved + rest)[:k]
 
+    def latest_status_chunk(self) -> str | None:
+        """source_type='status' の active チャンク本文(最新)を返す。無ければ None。
+        sensors の実測が全滅した時の「最終既知値」フォールバックに使う。"""
+        if not self.rag_enabled:
+            return None
+        row = self.conn.execute(
+            "SELECT content FROM chunks WHERE source_type='status' AND status='active' "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        return row[0] if row else None
+
     def unindexed_popover_turns(self, limit: int = 50) -> list[dict]:
         """未索引の popover complete ターン(10文字以上)を古い順に返す(backfill 用)。"""
         rows = self.conn.execute(

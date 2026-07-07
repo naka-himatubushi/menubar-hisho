@@ -1,13 +1,18 @@
-"""役割: 秘書 JARVIS のツール群。LLM が tool-calling で呼ぶ副作用付き操作を登録する。
-現状は forget_memories (記憶の soft-delete) のみ。将来 sensors 系を REGISTRY に足す。"""
+"""役割: 秘書 JARVIS のツール群 (REGISTRY) と tool spec 定義。
+- forget_memories: 記憶の soft-delete (副作用あり)。忘却ターンでモデルに tool-calling させる
+- check_status: センサー実測 (読み取り専用)。**tool 面は封印中** — モデルには渡さず、
+  server の決定的事前注入が REGISTRY 経由で呼ぶだけ (実LLMスモークで tool-calling 方式は
+  モデルの語りが実測に先行して汚染される欠陥を確認したため)。spec 定義は将来の再開用に残す"""
 from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 import anyio
 
 from . import rag
+from . import sensors
 
 logger = logging.getLogger("hisho")
 
@@ -25,6 +30,27 @@ TOOL_SPECS = [{
             "type": "object",
             "properties": {"query": {"type": "string", "description": "忘れる対象の語句"}},
             "required": ["query"],
+        },
+    },
+}, {
+    "type": "function",
+    "function": {
+        "name": "check_status",
+        "description": (
+            "読み取り専用。バックアップ状況・マシンの稼働・ディスク容量など「今どうなってる?」"
+            "という実測が必要な質問で呼ぶ。何も変更しない。"),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "enum": ["backup", "machines", "storage", "all"],
+                    "description": (
+                        "backup=バックアップ状況, machines=マシンの稼働状態, "
+                        "storage=ディスク容量/温度, all=まとめて全部"),
+                },
+            },
+            "required": ["topic"],
         },
     },
 }]
@@ -66,4 +92,33 @@ async def forget_memories(args, *, store, config, write_lock, embed=rag.embed, n
     }
 
 
-REGISTRY = {"forget_memories": forget_memories}
+async def check_status(args, *, store, config, write_lock=None):
+    """topic (backup/machines/storage/all) を実測し「HH:MM 実測」ヘッダつきレポートを返す。
+    読み取り専用 — DB を書き換えない (write_lock は forget_memories と同じ呼び出し規約に
+    合わせるため受け取るだけで使わない)。
+    台帳の全項目が実測失敗の場合は store の最新 status チャンク(定期収集分)を
+    「最終既知値」として追記する。戻り値: {topic, report}。"""
+    topic = (args or {}).get("topic")
+    if topic not in ("backup", "machines", "storage", "all"):
+        topic = "all"  # LLM が enum 外を出しても落とさず全体で拾う (安全側)
+
+    app_support_dir = Path(config.db_path).expanduser().parent
+    items, missing = await anyio.to_thread.run_sync(sensors.ledger_items, topic, app_support_dir)
+    header = sensors.now_header()
+
+    if not items:
+        body = "\n".join(missing) if missing else "台帳にコマンドが登録されていません"
+        return {"topic": topic, "report": f"{header}\n\n{body}"}
+
+    results = await anyio.to_thread.run_sync(sensors.run_all, items)
+    report = f"{header}\n\n{sensors.format_report(results, missing)}"
+
+    if sensors.all_failed(results):
+        latest = await anyio.to_thread.run_sync(store.latest_status_chunk)
+        if latest:
+            report = f"{report}\n\n実測できなかったため最終既知値 (定期収集分):\n{latest}"
+
+    return {"topic": topic, "report": report}
+
+
+REGISTRY = {"forget_memories": forget_memories, "check_status": check_status}

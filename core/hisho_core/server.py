@@ -36,6 +36,28 @@ def _forget_query(user_message: str) -> str:
     return _FORGET_TAIL.sub("", head).strip() or user_message
 
 
+# topic 推定用の語群。ちょうど 1 群に一致した時だけその topic、
+# 0 群 or 複数群一致は曖昧とみなし all で全部測る (読み取り専用なので過剰測定が安全側)。
+_TOPIC_PATTERNS = (
+    ("backup", re.compile(r"バックアップ")),
+    ("storage", re.compile(r"温度|容量|空き|ディスク")),
+    ("machines", re.compile(r"稼働|生きて|落ちて|マシン|動い")),
+)
+
+
+def _guess_topic(user_message: str) -> str:
+    """決定的事前実測用に user 発話から check_status の topic を推定する。"""
+    matched = [t for t, rx in _TOPIC_PATTERNS if rx.search(user_message)]
+    return matched[0] if len(matched) == 1 else "all"
+
+
+# M2 ゲート: 忘却ターンでモデルに渡す tool specs は forget_memories だけに絞る。
+# TOOL_SPECS 全渡しだと他ツールの specs が混ざり、意図しないターンで破壊的ツールが
+# 幻覚実行される経路が開く (adversarial レビュー #1 で再現済み)。
+_FORGET_SPECS = [s for s in tools_module.TOOL_SPECS
+                 if s["function"]["name"] == "forget_memories"]
+
+
 async def _default_probe(config: Config) -> dict:
     """Ollama に /api/version, /api/tags, /api/ps を叩いて健康状態を取得。例外時は reachable=False。"""
     import httpx
@@ -143,6 +165,10 @@ def create_app(
     # imperative 形に限定して否定 (「忘れないで」「消さないで」) を除外。
     # フォールバックが誤って削除しないための一次ゲート。
     app.state.forget_intent = re.compile(r"忘れて|消して|消去|削除|覚えなくて")
+    # センサー系キーワードゲート。読み取り専用なので forget ほど厳密でなくてよいが、
+    # forget ゲートが先勝ち (下の is_sensor 判定で is_forget を優先する)。
+    app.state.sensor_intent = re.compile(
+        r"状態|状況|調子|バックアップ|温度|容量|空き|稼働|生きて|落ちて|ディスク|動い")
     app.state.warmup_fn = warmup_fn or (lambda: llm.warmup(
         model=config.chat_model, ollama_host=config.ollama_host,
         num_ctx=config.num_ctx, keep_alive=config.keep_alive))
@@ -199,21 +225,44 @@ def create_app(
             user_turn_id = await anyio.to_thread.run_sync(store.append_user_turn, session_id, user_message, now, source)
 
         is_forget = source == "popover" and bool(app.state.forget_intent.search(user_message))
+        # forget ゲートが先勝ち: forget 意図が立った発話はセンサー意図として二重処理しない。
+        is_sensor = (source == "popover" and not is_forget
+                     and bool(app.state.sensor_intent.search(user_message)))
+
+        # 決定的事前実測 (安全性の要 #4): センサー系の質問はモデルに任せず、
+        # 応答生成の前にサーバが実測して結果を文脈注入する (モデルは要約のみ)。
+        # 実LLMスモーク (gemma4:12b) で tool-calling 方式は「モデルの語りが実測より
+        # 先に生成され、古い記憶で汚染された前説を語る」欠陥を確認したため一方通行にした。
+        sensor_report = None
+        if is_sensor:
+            try:
+                res = await app.state.tool_registry["check_status"](
+                    {"topic": _guess_topic(user_message)},
+                    store=store, config=cfg, write_lock=app.state.write_lock)
+                sensor_report = (res or {}).get("report") or "実測に失敗しました (内部エラー)"
+            except Exception:
+                logger.warning("sensor pre-measurement failed", exc_info=True)
+                sensor_report = "実測に失敗しました (内部エラー)"
+
         if source == "popover":
-            # 忘却要求ターンは過去メモを注入しない: 削除対象の事実が context に居ると
-            # モデルが forget ツールを呼ばず「消しました」と幻覚する (実測: qwen3.6)。
-            # ツールは DB を自前検索するので context のメモは不要。
-            memories = [] if is_forget else await rag.retrieve(
+            # 忘却/センサー要求ターンは過去メモを注入しない:
+            # - forget: 削除対象の事実が context に居るとモデルが tool を呼ばず
+            #   「消しました」と幻覚する (実測: qwen3.6)
+            # - sensor: 古い状態記憶が新しい実測と矛盾し、語りを汚染する (実測: gemma4:12b)
+            memories = [] if (is_forget or is_sensor) else await rag.retrieve(
                 store, user_message, config=cfg, exclude_session_id=session_id)
             recent = await anyio.to_thread.run_sync(store.recent_turns, session_id, cfg.history_replay_turns)
             recent_wo_last = recent[:-1] if recent and recent[-1]["role"] == "user" else recent
             messages = context.build_messages(recent_wo_last, user_message,
                                               cfg.num_ctx, cfg.response_reserve,
-                                              memories=memories)
+                                              memories=memories,
+                                              sensor_report=sensor_report)
         else:
             messages = msgs_in
 
-        use_tools = tools_module.TOOL_SPECS if is_forget else None
+        # 忘却ターンだけツールを渡す。それも forget_memories のみ (M2 ゲート)。
+        # センサーターンは実測済みレポートの要約だけさせるのでツールは一切渡さない。
+        use_tools = _FORGET_SPECS if is_forget else None
 
         async with app.state.write_lock:
             assistant_id = await anyio.to_thread.run_sync(store.add_assistant_placeholder, session_id, model, _now_ms(), source)
@@ -268,6 +317,12 @@ def create_app(
                     if fn is None:
                         logger.warning("unknown tool called: %s", pending_tool.get("name"))
                         break
+                    if pending_tool["name"] == "forget_memories" and not is_forget:
+                        # 多層防御 (M2): 忘却ゲートを通っていないターンで破壊的ツールは
+                        # 実行しない。ツールを渡していなくてもモデル/実装の異常で
+                        # tool_call が届く可能性に備える第二層。
+                        logger.warning("forget_memories rejected: no forget intent in this turn")
+                        break
                     if pending_tool["name"] == "forget_memories":
                         # H1: 試行した時点でフラグを立てる。成否・例外に関わらず
                         # finally での索引スキップ判定はこのフラグだけを見る。
@@ -297,7 +352,7 @@ def create_app(
                 # 決定的フォールバック (安全性の要): 明示的忘却意図なのにモデルが forget を
                 # 呼ばなかった場合 (qwen3.6 は memories 無しでも ~25% 幻覚で素通りする) →
                 # サーバが確実に forget を実行し、「消した」という嘘が実削除なしで通るのを防ぐ。
-                if use_tools and not tool_used_forget:
+                if is_forget and not tool_used_forget:
                     tool_used_forget = True   # H1: この往復も索引しない (試行した)
                     try:
                         fb = await app.state.tool_registry["forget_memories"](
@@ -342,7 +397,10 @@ def create_app(
                     async with app.state.write_lock:
                         await anyio.to_thread.run_sync(store.finalize_turn, assistant_id, "".join(acc), None, status, _now_ms())
                         await anyio.to_thread.run_sync(store.touch_session, session_id, _now_ms())
-                if source == "popover" and not tool_used_forget:   # H1: 忘却を試みた往復は(成否問わず)索引しない
+                # H1: 忘却を試みた往復は(成否問わず)索引しない。
+                # センサー往復も索引しない (レビュー#7: 揮発性の実測値が「既知の事実」として
+                # 将来の会話に注入されるのを防ぐ)。
+                if source == "popover" and not tool_used_forget and not is_sensor:
                     asyncio.create_task(_index_pair())
 
         return StreamingResponse(gen(), media_type="text/event-stream",
