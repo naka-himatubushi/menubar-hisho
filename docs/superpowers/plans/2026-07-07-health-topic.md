@@ -100,17 +100,20 @@ cd ~/sandbox/menubar-hisho && git add core/hisho_core/sensors.py core/tests/test
 
 ---
 
-### Task 2: server.py — health のキーワードルーティング
+### Task 2: server.py + tools.py — health のルーティングと check_status 対応
 
 **Files:**
 - Modify: `core/hisho_core/server.py:41-45` (_TOPIC_PATTERNS)
-- Test: `core/tests/test_server_sensors.py:102-109` (test_guess_topic_matrix に追記)
+- Modify: `core/hisho_core/tools.py:47` (check_status の enum と description)、`core/hisho_core/tools.py:102` (topic 正規化ガード)
+- Test: `core/tests/test_server_sensors.py:102-109` (test_guess_topic_matrix に追記)、`core/tests/test_tools_status.py` (health 受理テスト追記)
 
 **Interfaces:**
 - Consumes: Task 1 の `sensors.TOPICS` に "health" が存在すること (measure が ValueError を出さない)
-- Produces: `_guess_topic()` が「警報|異常|アラート|レポート|健康」単独一致で `"health"` を返す
+- Produces: `_guess_topic()` が「警報|異常|アラート|レポート|健康」単独一致で `"health"` を返す。`check_status({"topic": "health"})` が health を all に潰さず素通しする
 
-- [ ] **Step 1: 失敗するテストを書く** — `test_guess_topic_matrix` に4行追記:
+**重要 (Task 1 レビューで発見された統合バグの回避):** 事前注入経路は `server.py:239` で `check_status` を呼ぶ。`tools.py` のガード `if topic not in ("backup", "machines", "storage", "all"): topic = "all"` に health を足さないと、_guess_topic が "health" を返しても check_status が黙って all に書き換え、狙い撃ちルーティングが無効化される。server.py と tools.py は必ずセットで変更する。
+
+- [ ] **Step 1: 失敗するテストを書く (2ファイル)** — `test_guess_topic_matrix` に4行追記:
 
 ```python
     assert _guess_topic("朝レポート見せて") == "health"
@@ -119,12 +122,28 @@ cd ~/sandbox/menubar-hisho && git add core/hisho_core/sensors.py core/tests/test
     assert _guess_topic("バックアップの異常は?") == "all"   # backup+health 2群 → all
 ```
 
+`core/tests/test_tools_status.py` の `test_check_status_invalid_topic_normalizes_to_all` の直後に追記 (同ファイルの `_cfg` / `FakeStoreWithStatus` / `_write_ledger` 相当の既存ヘルパをそのまま使う):
+
+```python
+def test_check_status_accepts_health_topic(tmp_path, monkeypatch):
+    (tmp_path / "sensor_targets.json").write_text(
+        '{"topics": {"machines": [{"name": "M", "cmd": "echo m"}], '
+        '"health": [{"name": "H", "cmd": "echo 監視レポートOK"}]}}')
+    out = anyio.run(lambda: tools.check_status(
+        {"topic": "health"}, store=FakeStoreWithStatus(), config=_cfg(tmp_path), write_lock=None))
+    assert out["topic"] == "health"          # all に潰されない
+    assert "監視レポートOK" in out["report"]  # health エントリを実行
+    assert "echo m" not in out["report"]     # machines エントリは実行しない
+```
+
+(既存テストの import・ヘルパ名が上と違う場合はそのファイルの流儀に合わせる。アサーションの意図は変えない)
+
 - [ ] **Step 2: 失敗を確認**
 
-Run: `cd ~/sandbox/menubar-hisho/core && uv run pytest tests/test_server_sensors.py::test_guess_topic_matrix -v`
-Expected: FAIL (「朝レポート見せて」が "all" になる)
+Run: `cd ~/sandbox/menubar-hisho/core && uv run pytest tests/test_server_sensors.py::test_guess_topic_matrix tests/test_tools_status.py -v`
+Expected: FAIL (「朝レポート見せて」が "all" になる / health が all に正規化される)
 
-- [ ] **Step 3: 最小実装** — `_TOPIC_PATTERNS` に1行追加:
+- [ ] **Step 3: 最小実装 (2ファイル)** — `server.py` の `_TOPIC_PATTERNS` に1行追加:
 
 ```python
 _TOPIC_PATTERNS = (
@@ -137,9 +156,31 @@ _TOPIC_PATTERNS = (
 
 「調子」は入れない (既存テスト `調子どう? == "all"` の固定挙動を守る。全部測る方が自然)。
 
+`tools.py` の check_status 2箇所:
+
+TOOL_SPECS の enum と description (47行目付近):
+```python
+                "topic": {
+                    "type": "string",
+                    "enum": ["backup", "machines", "storage", "health", "all"],
+                    "description": (
+                        "backup=バックアップ状況, machines=マシンの稼働状態, "
+                        "storage=ディスク容量/温度, health=mini の監視レポート/警報, "
+                        "all=まとめて全部"),
+                },
+```
+
+check_status() の正規化ガード (102行目付近):
+```python
+    if topic not in ("backup", "machines", "storage", "health", "all"):
+        topic = "all"  # LLM が enum 外を出しても落とさず全体で拾う (安全側)
+```
+
+check_status の docstring 1行目の enum 列挙も (backup/machines/storage/health/all) に更新。
+
 - [ ] **Step 4: テスト通過を確認**
 
-Run: `cd ~/sandbox/menubar-hisho/core && uv run pytest tests/test_server_sensors.py tests/test_sensors.py -v`
+Run: `cd ~/sandbox/menubar-hisho/core && uv run pytest tests/test_server_sensors.py tests/test_sensors.py tests/test_tools_status.py -v`
 Expected: 全 PASS
 
 - [ ] **Step 5: 回帰確認 (全テスト)**
@@ -150,7 +191,7 @@ Expected: 全 PASS
 - [ ] **Step 6: Commit** (監督が実行)
 
 ```bash
-cd ~/sandbox/menubar-hisho && git add core/hisho_core/server.py core/tests/test_server_sensors.py && git commit -m "feat(sensors): health topic のキーワードルーティング"
+cd ~/sandbox/menubar-hisho && git add core/hisho_core/server.py core/hisho_core/tools.py core/tests/test_server_sensors.py core/tests/test_tools_status.py && git commit -m "feat(sensors): health topic のルーティングと check_status 対応"
 ```
 
 ---
