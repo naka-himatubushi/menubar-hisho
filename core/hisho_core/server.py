@@ -42,6 +42,7 @@ _TOPIC_PATTERNS = (
     ("backup", re.compile(r"バックアップ")),
     ("storage", re.compile(r"温度|容量|空き|ディスク")),
     ("machines", re.compile(r"稼働|生きて|落ちて|マシン|動い")),
+    ("health", re.compile(r"警報|異常|アラート|レポート|健康")),
 )
 
 

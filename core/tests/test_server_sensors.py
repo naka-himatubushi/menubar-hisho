@@ -107,6 +107,10 @@ def test_guess_topic_matrix():
     assert _guess_topic("調子どう?") == "all"                       # topic 語ゼロ → all
     assert _guess_topic("バックアップ用ディスクの容量は?") == "all"  # 2 群一致 → all
     assert _guess_topic("バックアップのマシンは稼働してる?") == "all"  # backup+machines → all
+    assert _guess_topic("朝レポート見せて") == "health"
+    assert _guess_topic("何か異常出てる?") == "health"
+    assert _guess_topic("警報鳴った?") == "health"
+    assert _guess_topic("バックアップの異常は?") == "all"   # backup+health 2群 → all
 
 
 # --- forget 先勝ち / specs フィルタ ---

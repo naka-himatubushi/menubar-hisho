@@ -76,6 +76,17 @@ def test_check_status_invalid_topic_normalizes_to_all(tmp_path, monkeypatch):
     assert out["topic"] == "all"  # LLM由来の不正値をコマンドに混ぜず安全側(all)へ正規化
 
 
+def test_check_status_accepts_health_topic(tmp_path, monkeypatch):
+    (tmp_path / "sensor_targets.json").write_text(
+        '{"topics": {"machines": [{"name": "M", "cmd": "echo m"}], '
+        '"health": [{"name": "H", "cmd": "echo 監視レポートOK"}]}}')
+    out = asyncio.run(tools.check_status(
+        {"topic": "health"}, store=FakeStoreWithStatus(), config=_cfg(tmp_path), write_lock=None))
+    assert out["topic"] == "health"          # all に潰されない
+    assert "監視レポートOK" in out["report"]  # health エントリを実行
+    assert "echo m" not in out["report"]     # machines エントリは実行しない
+
+
 def test_check_status_missing_topic_arg_defaults_to_all(tmp_path, monkeypatch):
     monkeypatch.setattr(sensors, "run_all", lambda items: [])
     out = asyncio.run(tools.check_status({}, store=FakeStoreWithStatus(),
