@@ -170,7 +170,7 @@ def create_app(
     # forget ゲートが先勝ち (下の is_sensor 判定で is_forget を優先する)。
     app.state.sensor_intent = re.compile(
         r"状態|状況|調子|バックアップ|温度|容量|空き|稼働|生きて|落ちて|ディスク|動い"
-        r"|警報|異常|アラート|レポート|健康")
+        r"|マシン|警報|異常|アラート|レポート|健康")
     app.state.warmup_fn = warmup_fn or (lambda: llm.warmup(
         model=config.chat_model, ollama_host=config.ollama_host,
         num_ctx=config.num_ctx, keep_alive=config.keep_alive))

@@ -6,7 +6,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from hisho_core import server as server_mod
-from hisho_core.server import create_app, _guess_topic
+from hisho_core.server import create_app, _guess_topic, _TOPIC_PATTERNS
 from hisho_core.config import load_config
 from hisho_core.context import SENSOR_NOTE
 from hisho_core.store import Store
@@ -135,6 +135,18 @@ def test_guess_topic_matrix():
     assert _guess_topic("何か異常出てる?") == "health"
     assert _guess_topic("警報鳴った?") == "health"
     assert _guess_topic("バックアップの異常は?") == "all"   # backup+health 2群 → all
+
+
+def test_sensor_gate_covers_all_topic_pattern_words(tmp_path):
+    """_TOPIC_PATTERNS の各語は sensor_intent ゲートも必ず通ること。
+    パターンに足してゲートに足し忘れると、その語の質問が実測されず
+    一般論を答える (2026-07-07 の本番スモークで実際に発生した欠陥)。"""
+    store = Store(str(tmp_path / "t.db"))
+    app = create_app(store, load_config(), chat_fn=None)
+    for topic, rx in _TOPIC_PATTERNS:
+        for word in rx.pattern.split("|"):
+            assert app.state.sensor_intent.search(word), (
+                f"topic {topic!r} の語 {word!r} が sensor_intent ゲートに無い")
 
 
 # --- forget 先勝ち / specs フィルタ ---

@@ -183,7 +183,7 @@ def measure(topic: str, app_support_dir: Path | str,
             *, now: Callable[[], datetime] = datetime.now) -> str:
     """topic を検証し、台帳から読んだコマンドを並列実測して平文レポートを返す。
 
-    topic は "backup"|"machines"|"storage"|"all" のみ (それ以外は ValueError)。
+    topic は "backup"|"machines"|"storage"|"health"|"all" のみ (それ以外は ValueError)。
     台帳ファイルが無い場合も例外は投げず、分かるメッセージ入りのレポートを返す。
     """
     items, missing = ledger_items(topic, app_support_dir)
