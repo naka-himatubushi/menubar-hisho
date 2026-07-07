@@ -180,7 +180,8 @@ from pathlib import Path
 
 LEDGER = Path.home() / "Library" / "Application Support" / "Hisho" / "sensor_targets.json"
 MINI = "<mini-user>@<mini-tailnet-ip>"
-SSH = f"ssh -o BatchMode=yes -o ConnectTimeout=6 {MINI} "
+# ConnectTimeout 4 + curl max-time 3 = 最悪 7 秒 < COMMAND_TIMEOUT 8 秒 (レビュー指摘対応)
+SSH = f"ssh -o BatchMode=yes -o ConnectTimeout=4 {MINI} "
 
 SUMMARY = '''
 import json
@@ -235,7 +236,7 @@ else:
 '''
 
 CHANNEL = "<bulletin-board-channel-id>"
-CURL = (f'source ~/.secrets/.env; curl -s --max-time 6 '
+CURL = (f'source ~/.secrets/.env; curl -s --max-time 3 '
         f'"https://discord.com/api/v10/channels/{CHANNEL}/messages?limit=20" '
         f'-H "Authorization: Bot ${{DISCORD_BOT_TOKEN}}"')
 
