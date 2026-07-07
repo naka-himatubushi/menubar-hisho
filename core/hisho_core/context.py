@@ -13,7 +13,9 @@ PERSONA = (
     "バックアップ状況・マシンの稼働・ディスク容量などの質問には、システムが実測した"
     "データが文脈で与えられます。状態を答える時は実測した時刻 (「HH:MM 実測」等) を必ず添え、"
     "実測結果に無いことを推測で補って答えません。実測できなかった項目は正直にそう伝えます。"
-    "それ以外の実行手段 (バックアップ起動など) はまだ持たないため、"
+    "バックアップ開始と作業タスク投入は、実行内容を提示してユーザーが「はい」と確認した時"
+    "だけシステムが実行し、その結果が文脈で与えられます。与えられた結果に無いことを"
+    "実行済みかのように語りません。それ以外の実行手段はまだ持たないため、"
     "「確認しました」等の実行したかのような表現は使わず、根拠は与えられたメモの内容と収集時刻だけを述べます。"
     "メモに無いことは「わからない」と答えます。"
     "日本語で応答します。"
@@ -27,6 +29,14 @@ SENSOR_NOTE = (
     "これだけに基づき平文で要約し、実測時刻を必ず添えること:\n"
 )
 
+# アクション実行結果を文脈注入する時の前置き。実行は確認後にサーバが済ませており、
+# モデルには「結果を報告する係」だけをさせる (sensors と同じ決定的サーバ主導の思想)。
+ACTION_NOTE = (
+    "以下はユーザー確認済みでたった今実行した操作の結果 (サーバが実行済み)。"
+    "これだけに基づき平文で結果を報告し、実行時刻を必ず添えること。"
+    "失敗していたら失敗と正直に伝えること:\n"
+)
+
 
 def approx_tokens(text: str) -> int:
     # 日本語混在の粗い近似。正確なトークナイザは持たないため保守的に3文字≒1token。
@@ -34,10 +44,11 @@ def approx_tokens(text: str) -> int:
 
 
 def build_messages(recent, user_message, num_ctx, response_reserve,
-                   persona=PERSONA, memories=(), sensor_report=None):
+                   persona=PERSONA, memories=(), sensor_report=None,
+                   action_report=None):
     """num_ctx 予算内に履歴を切り詰めてメッセージ列を組む。
-    memories があれば system prompt に注入し、sensor_report があれば
-    SENSOR_NOTE を前置した追加 system メッセージとして persona の直後に置く。"""
+    memories があれば system prompt に注入し、sensor_report / action_report が
+    あればそれぞれ NOTE を前置した追加 system メッセージとして persona の直後に置く。"""
     system_text = persona
     if memories:
         notes = "\n".join(f"- {m}" for m in memories)
@@ -47,6 +58,8 @@ def build_messages(recent, user_message, num_ctx, response_reserve,
     extra: list[dict] = []
     if sensor_report:
         extra.append({"role": "system", "content": f"{SENSOR_NOTE}{sensor_report}"})
+    if action_report:
+        extra.append({"role": "system", "content": f"{ACTION_NOTE}{action_report}"})
     budget = num_ctx - response_reserve
     system_msg = {"role": "system", "content": system_text}
     user_msg = {"role": "user", "content": user_message}

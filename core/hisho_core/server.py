@@ -9,6 +9,8 @@ import uuid
 import anyio
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
+from pathlib import Path
+from . import actions as actions_module
 from . import context
 from . import llm
 from . import rag
@@ -118,7 +120,7 @@ async def warmup_when_ready(probe, warmup, *, attempts=120, interval=2.0,
 
 def create_app(
     store: Store, config: Config, *, chat_fn=None, probe_fn=None,
-    warmup_fn=None, unload_fn=None,
+    warmup_fn=None, unload_fn=None, action_executor=None,
 ) -> FastAPI:
     """FastAPI アプリを組立。
 
@@ -129,6 +131,8 @@ def create_app(
         probe_fn: 健康状態プローブ関数 (既定: _default_probe(config))
         warmup_fn: warm-up 関数 (既定: llm.warmup with config 値)
         unload_fn: アンロード関数 (既定: llm.unload with config 値)
+        action_executor: アクション実行関数 (argv) -> str (既定: actions.execute。
+            work CLI が無いテスト/CI 環境向けの注入口)
 
     Returns:
         FastAPI アプリ
@@ -169,6 +173,16 @@ def create_app(
     # forget ゲートが先勝ち (下の is_sensor 判定で is_forget を優先する)。
     app.state.sensor_intent = re.compile(
         r"状態|状況|調子|バックアップ|温度|容量|空き|稼働|生きて|落ちて|ディスク|動い")
+    # アクション意図ゲート。優先順位: forget > 確認 (pending あり) > 提案 > sensor。
+    # 提案の取り違えは確認フロー (「はい」以外で破棄) が無害化するので、緩くてよい。
+    app.state.action_intent = re.compile(
+        r"(バックアップ|TM).*(回|取|開始|走|実行|して)"
+        r"|((スタジオ|studio|ミニ|mini).*(投げ|回し|任せ|やらせ|やって))",
+        re.IGNORECASE)
+    # 確認待ちの操作 (session 束縛・TTL 5分・一回限り)。再起動で消える = 安全側。
+    app.state.pending_actions = actions_module.PendingActions()
+    # アクション実行係。テスト/CI では fake を注入して実 subprocess を避ける。
+    app.state.action_executor = action_executor or actions_module.execute
     app.state.warmup_fn = warmup_fn or (lambda: llm.warmup(
         model=config.chat_model, ollama_host=config.ollama_host,
         num_ctx=config.num_ctx, keep_alive=config.keep_alive))
@@ -225,9 +239,38 @@ def create_app(
             user_turn_id = await anyio.to_thread.run_sync(store.append_user_turn, session_id, user_message, now, source)
 
         is_forget = source == "popover" and bool(app.state.forget_intent.search(user_message))
-        # forget ゲートが先勝ち: forget 意図が立った発話はセンサー意図として二重処理しない。
-        is_sensor = (source == "popover" and not is_forget
+
+        # アクション確認/破棄 (優先順位: forget > 確認 > 提案 > sensor)。
+        # pending は pop で一回限り: 確認語で成立、それ以外の発話 (forget 含む) で破棄。
+        pending_confirm = None
+        pending_discarded = False
+        if source == "popover":
+            pa_prev = app.state.pending_actions.pop(session_id)
+            if pa_prev is not None:
+                if not is_forget and actions_module.is_confirmation(user_message):
+                    pending_confirm = pa_prev
+                else:
+                    pending_discarded = True
+
+        is_action = (source == "popover" and not is_forget and pending_confirm is None
+                     and bool(app.state.action_intent.search(user_message)))
+        # forget / アクションのゲートが先勝ち。
+        is_sensor = (source == "popover" and not is_forget and pending_confirm is None
+                     and not is_action
                      and bool(app.state.sensor_intent.search(user_message)))
+        app_support_dir = Path(cfg.db_path).expanduser().parent
+
+        # 確認成立 → サーバが決定的に実行 (安全不変条件: 実行経路はここだけ。
+        # argv は提案時に組み立て済みのリスト直渡しで、モデルは実行に一切関与しない)。
+        action_report = None
+        if pending_confirm is not None:
+            try:
+                out = await anyio.to_thread.run_sync(
+                    app.state.action_executor, pending_confirm.argv)
+            except Exception:
+                logger.warning("action execution failed", exc_info=True)
+                out = "実行失敗: 内部エラー"
+            action_report = actions_module.execution_report(pending_confirm, out)
 
         # 決定的事前実測 (安全性の要 #4): センサー系の質問はモデルに任せず、
         # 応答生成の前にサーバが実測して結果を文脈注入する (モデルは要約のみ)。
@@ -245,23 +288,27 @@ def create_app(
                 sensor_report = "実測に失敗しました (内部エラー)"
 
         if source == "popover":
-            # 忘却/センサー要求ターンは過去メモを注入しない:
+            # 忘却/センサー/アクション関連ターンは過去メモを注入しない:
             # - forget: 削除対象の事実が context に居るとモデルが tool を呼ばず
             #   「消しました」と幻覚する (実測: qwen3.6)
             # - sensor: 古い状態記憶が新しい実測と矛盾し、語りを汚染する (実測: gemma4:12b)
-            memories = [] if (is_forget or is_sensor) else await rag.retrieve(
+            # - action: 古い記憶が提案/実行報告を汚染するのを防ぐ (sensors と同じ思想)
+            skip_memories = is_forget or is_sensor or is_action or pending_confirm is not None
+            memories = [] if skip_memories else await rag.retrieve(
                 store, user_message, config=cfg, exclude_session_id=session_id)
             recent = await anyio.to_thread.run_sync(store.recent_turns, session_id, cfg.history_replay_turns)
             recent_wo_last = recent[:-1] if recent and recent[-1]["role"] == "user" else recent
             messages = context.build_messages(recent_wo_last, user_message,
                                               cfg.num_ctx, cfg.response_reserve,
                                               memories=memories,
-                                              sensor_report=sensor_report)
+                                              sensor_report=sensor_report,
+                                              action_report=action_report)
         else:
             messages = msgs_in
 
         # 忘却ターンだけツールを渡す。それも forget_memories のみ (M2 ゲート)。
-        # センサーターンは実測済みレポートの要約だけさせるのでツールは一切渡さない。
+        # センサー/確認ターンはレポートの要約だけさせるのでツールは一切渡さない。
+        # アクション提案ターンは gen() 内の隠し呼び出しだけに ACTION_SPECS を公開する。
         use_tools = _FORGET_SPECS if is_forget else None
 
         async with app.state.write_lock:
@@ -294,6 +341,64 @@ def create_app(
 
             try:
                 yield sse(chunk(cid, model, _now_ms() // 1000, delta={"role": "assistant"}, finish_reason=None))
+                if pending_discarded:
+                    # 確認以外の発話が来たので保留操作は破棄済み (安全側)。決定的に一言添える。
+                    note = "[保留中の操作は取り消しました]\n\n"
+                    acc.append(note)
+                    yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": note}, finish_reason=None))
+                if is_action:
+                    # 提案ターン (安全不変条件 1): 初回ターンでは絶対に実行しない。
+                    # モデルには ACTION_SPECS だけ公開し、content は流さず tool_call だけ拾う
+                    # (引数抽出をモデルに手伝わせるが、応答文はサーバ定型に固定する)。
+                    proposed = None
+                    try:
+                        async for evt in app.state.chat_fn(
+                                convo, model=model, ollama_host=cfg.ollama_host,
+                                num_ctx=cfg.num_ctx, keep_alive=cfg.keep_alive, think=False,
+                                tools=actions_module.ACTION_SPECS):
+                            if evt["type"] == "tool_call":
+                                proposed = evt
+                            elif evt["type"] == "error":
+                                logger.warning("action elicitation error: %s", evt.get("message"))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.warning("action elicitation failed", exc_info=True)
+                    pa = None
+                    build_error = None
+                    if proposed is not None and proposed.get("name") in actions_module.ACTION_NAMES:
+                        try:
+                            pa = actions_module.build_pending(
+                                proposed["name"], proposed.get("arguments") or {},
+                                session_id=session_id, app_support_dir=app_support_dir,
+                                user_message=user_message)
+                        except actions_module.ActionError as e:
+                            build_error = str(e)  # 台帳の問題 (どの案でも同じ)
+                        except Exception:
+                            # モデル案の引数不正 (enum 外等) → 決定的構築へフォールバック
+                            logger.warning("model-proposed action invalid — fallback", exc_info=True)
+                    if pa is None and build_error is None:
+                        name, args = actions_module.guess_action(user_message)
+                        try:
+                            pa = actions_module.build_pending(
+                                name, args, session_id=session_id,
+                                app_support_dir=app_support_dir, user_message=user_message)
+                        except actions_module.ActionError as e:
+                            build_error = str(e)
+                        except Exception:
+                            logger.warning("deterministic action build failed", exc_info=True)
+                            build_error = "操作を組み立てられませんでした (内部エラー)"
+                    if pa is not None:
+                        app.state.pending_actions.put(session_id, pa)
+                        line = actions_module.proposal_text(pa)
+                    else:
+                        line = build_error or "操作を組み立てられませんでした (内部エラー)"
+                    acc.append(line)
+                    yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": line}, finish_reason=None))
+                    yield sse(chunk(cid, model, _now_ms() // 1000, delta={}, finish_reason="stop"))
+                    yield DONE
+                    status = "complete"
+                    return
                 for _ in range(MAX_TOOL_ITERS):
                     pending_tool = None
                     async for evt in app.state.chat_fn(
@@ -399,8 +504,11 @@ def create_app(
                         await anyio.to_thread.run_sync(store.touch_session, session_id, _now_ms())
                 # H1: 忘却を試みた往復は(成否問わず)索引しない。
                 # センサー往復も索引しない (レビュー#7: 揮発性の実測値が「既知の事実」として
-                # 将来の会話に注入されるのを防ぐ)。
-                if source == "popover" and not tool_used_forget and not is_sensor:
+                # 将来の会話に注入されるのを防ぐ)。アクション関連往復 (提案/確認/破棄) も
+                # 同じ理由で索引しない。
+                skip_index = (tool_used_forget or is_sensor or is_action
+                              or pending_confirm is not None or pending_discarded)
+                if source == "popover" and not skip_index:
                     asyncio.create_task(_index_pair())
 
         return StreamingResponse(gen(), media_type="text/event-stream",
