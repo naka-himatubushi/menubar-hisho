@@ -194,6 +194,24 @@ def test_ledger_items_reads_machines_and_storage_topics(tmp_path):
     assert missing_all == []  # backup_targets.json も存在するので欠落なし
 
 
+def test_ledger_items_reads_health_topic(tmp_path):
+    (tmp_path / "backup_targets.json").write_text('{"devices": []}')
+    (tmp_path / "sensor_targets.json").write_text(
+        '{"topics": {"machines": [{"name": "M1", "cmd": "echo"}], '
+        '"storage": [{"name": "S1", "cmd": "echo"}], '
+        '"health": [{"name": "H1", "cmd": "echo"}]}}')
+    items, missing = sensors.ledger_items("health", tmp_path)
+    assert [i["name"] for i in items] == ["H1"]
+    assert missing == []
+
+    items_all, _ = sensors.ledger_items("all", tmp_path)
+    assert {i["name"] for i in items_all} == {"M1", "S1", "H1"}
+
+
+def test_topics_enum_contains_health():
+    assert "health" in sensors.TOPICS
+
+
 def test_ledger_items_missing_file_reports_but_does_not_raise(tmp_path):
     items, missing = sensors.ledger_items("backup", tmp_path)
     assert items == []
