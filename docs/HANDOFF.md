@@ -1,6 +1,11 @@
-# Hisho (JARVIS) — セッション引き継ぎ (2026-07-03 終業時点)
+# JARVIS (旧称 Hisho) — セッション引き継ぎ (2026-07-03 終業時点)
 
 > 次セッションで**そのまま再開**するための地図。詳細は spec / plans / メモリを参照。
+
+> **📛 2026-07-09 改名を正式化**: 本プロジェクトの正式名は **JARVIS** (メニューバー表示は既に JARVIS ブランド)。
+> 「Hisho」は旧称 — コード識別子 (`hisho_core`、`HISHO_MODEL`、`com.hisho.*` plist)・ディレクトリ名
+> `menubar-hisho` は稼働中のため据え置き。旧「JARVIS」(inbox 書庫基盤) は **Library-DB** に改名し
+> `~/sandbox/library-db/` へ移動、JARVIS 傘下の書庫機能という位置づけ (統合は同 repo の phase1 計画フェーズ⑤)。
 
 ## 現在地
 
