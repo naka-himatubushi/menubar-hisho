@@ -1,4 +1,4 @@
-# JARVIS (旧称 Hisho) — セッション引き継ぎ (2026-07-03 終業時点)
+# JARVIS (旧称 Hisho) — セッション引き継ぎ (2026-07-15 時点)
 
 > 次セッションで**そのまま再開**するための地図。詳細は spec / plans / メモリを参照。
 
@@ -9,8 +9,8 @@
 
 ## 現在地
 
-- ブランチ **main** / working tree clean / **Python 84 tests + Swift 30 tests green** / GitHub public に push 済
-- **Plan 1〜3 (core / Swift 殻 / RAG) + Plan 4 スライス1 (forget) + 新しい会話ボタン + 電源トグル = 全部完成・main マージ済**
+- ブランチ **main** / **Python 208 tests + Swift 30 tests green** / ⚠️未 push (origin より先行中)
+- **Plan 1〜3 (core / Swift 殻 / RAG) + Plan 4 (forget / sensors / health / actions) + 新しい会話ボタン + 電源トグル = 全部完成・main マージ済・配備済**
 - **既定チャットモデル = `gemma4:12b`** (常駐 ~8.4GB。`HISHO_MODEL` env で上位モデルに切替可)。埋め込み = bge-m3
 - アプリは JARVIS ブランド (髭アイコン) でメニューバー常駐稼働中
 - 公開物に実名・内部 IP・ホスト名を書かない (author 中立、docs は「オーナー」表記)
@@ -24,6 +24,9 @@
 5. **忘却 (Plan 4 スライス1)**: 「○○忘れて」で長期記憶を soft-delete。実 LLM で安全削除を実測検証済 (対象のみ削除・巻き添えなし・想起からも消滅・可逆)
 6. **新しい会話ボタン (📝)**: popover ヘッダ。画面クリア + 新スレッド (session_id 再生成)。SQLite の会話は残る
 7. **電源トグル (⏻)**: popover ヘッダ。モデルを手動アンロード (VRAM ~8GB 即解放) / ロード。30分アイドル自動アンロードに加えた手動制御
+8. **sensors + health topic (実測型の目)**: センサー質問はサーバが応答前に必ず実測→注入、モデルは要約のみ (2026-07-07)
+9. **actions (手の解禁、2026-07-15 封印解除・実LLMスモーク合格)**: 「バックアップ回して」「miniに投げて」→ サーバ定型で実行内容 (argv 可読形) を提示 → 「はい」でのみ実行。enum 2本固定 (start_backup/fleet_submit)、shell 非経由、pending 5分TTL・一回限り・session 束縛。台帳 = repo 外 `action_targets.json`
+10. **Spotlight 起動 + アプリアイコン**: `/Applications/JARVIS.app` 配備 (`scripts/deploy_app.sh`)、アイコンはメニューバーと同じ mustache
 
 ## 🔑 forget の実 LLM 教訓 (重要・コードレビューでは捕捉できず実機スモークのみが暴いた)
 
@@ -35,7 +38,8 @@
 
 ## 次の候補 (未着手)
 
-- ~~Plan 4 スライス2: sensors~~ — **確認系は完成・配備済 (2026-07-07 main マージ)**: センサー質問 (バックアップ/状態/health) はサーバが実測→注入で回答する。実行系「起動して」は `feat/actions` branch に実装済み (197 tests green) だが**中止・封印** (実LLMスモーク未実施。再開時はレビュー→実スモーク (TM実起動+mini軽ジョブ) から)
+- ~~Plan 4 スライス2 (sensors/actions)~~ — **全部完成**: 確認系 2026-07-07、実行系 actions は 2026-07-15 封印解除→実LLMスモーク合格→main マージ・配備済。スモークが暴いた演技2経路 (破棄直後/新規会話初手の「はい」でモデルが実行を装う) はサーバ定型で遮断 (spec 応答規約参照)。**スモークの教訓: サーバが実行してなくてもモデルは実行済みのように語る — 確認系の応答に実測スタンプ/定型が無ければ演技を疑え**
+- **history/棚卸し UI (次の本命・着手承認済 2026-07-15)**: 過去会話の閲覧+検索 (core の `/history` API と turns_fts は実装済み、Swift 画面が主作業) + 記憶一覧と忘れるボタン
 - 電源トグルの磨き: OFF 直後に一瞬緑に光る (healthz 3秒キャッシュ + ollama アンロード遅延)。probe cache TTL 短縮 or optimistic 表示で解消可
 - keep_alive 短縮 (`HISHO_KEEP_ALIVE`) でアイドル時もメモリ解放 / gemma4:12b の品質が不足なら 26b-a4b に戻す
 - `/history` 画面 / SMAppService (ログイン起動)
@@ -44,7 +48,7 @@
 
 ```bash
 cd ~/sandbox/menubar-hisho
-core/.venv/bin/python -m pytest core/tests/ -q                      # 84 passed
+core/.venv/bin/python -m pytest core/tests/ -q                      # 208 passed
 cd HishoKit && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test  # 30 tests
 # アプリ再ビルド (core を変えた時は build_core.sh 必須):
 scripts/build_core.sh && cd HishoApp && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodegen generate && cd .. \
