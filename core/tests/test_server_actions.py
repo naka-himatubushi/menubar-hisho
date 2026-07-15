@@ -284,6 +284,32 @@ def test_action_gate_beats_sensor_gate(tmp_path):
     assert app.state.pending_actions.pop("pri3") is not None
 
 
+def test_status_check_request_routes_to_sensor_not_action(tmp_path):
+    """「バックアップの状態を確認して」は確認依頼 (sensor 意図)。
+    bare「して」で提案化しない (main 統合レビューで発見した誤ルーティングの再発防止)。"""
+    app, calls, executed = _mk_app(tmp_path, _plain("正常です"))
+    status_called = {"n": 0}
+
+    async def fake_check_status(args, **kw):
+        status_called["n"] += 1
+        return {"topic": "backup", "report": "x"}
+
+    app.state.tool_registry = {"check_status": fake_check_status}
+    body = _post(app, "pri4", "バックアップの状態を確認して")
+    assert status_called["n"] == 1                      # sensor 実測が走る
+    assert "実行内容:" not in body                      # 提案にならない
+    assert app.state.pending_actions.pop("pri4") is None
+
+
+def test_bare_backup_request_still_proposes(tmp_path):
+    """名詞直結の「バックアップして」は action 提案のまま (ゲート限定強化の裏面保証)。"""
+    app, calls, executed = _mk_app(tmp_path, _plain())
+    body = _post(app, "pri5", "バックアップして")
+    assert "実行内容:" in body
+    assert app.state.pending_actions.pop("pri5") is not None
+    assert executed == []                               # 提案止まり、実行はしない
+
+
 # --- 非発火 / 非実行経路の証明 ---
 
 def test_unrelated_message_creates_no_pending(tmp_path):
