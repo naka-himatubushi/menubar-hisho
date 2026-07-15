@@ -6,7 +6,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from hisho_core import server as server_mod
-from hisho_core.server import create_app, _guess_topic
+from hisho_core.server import create_app, _guess_topic, _TOPIC_PATTERNS
 from hisho_core.config import load_config
 from hisho_core.context import SENSOR_NOTE
 from hisho_core.store import Store
@@ -97,6 +97,30 @@ def test_sensor_premeasure_failure_injects_honest_failure_note(tmp_path):
     assert any("実測に失敗しました" in m["content"] for m in sys_msgs)
 
 
+def test_health_topic_phrase_triggers_sensor_gate_and_injects_report(tmp_path):
+    """本番スモーク回帰: 「朝レポート見せて」は health topic 語だが、
+    sensor_intent ゲートに health 語が無いと is_sensor=False のまま _guess_topic
+    まで到達せず実測されない (一般論で答えてしまう)。popover からの発話で
+    check_status が呼ばれ、レポートが system メッセージとして注入されることを検証する。"""
+    store = Store(str(tmp_path / "t.db"))
+    chat_fn, calls = _make_chat_fn(_plain_answer_script("異常はありません"))
+    app = create_app(store, load_config(), chat_fn=chat_fn,
+                     probe_fn=lambda: _ok_probe(), warmup_fn=_true, unload_fn=_true)
+    called = {}
+    app.state.tool_registry = {"check_status": _fake_check_status(called)}
+    with TestClient(app) as c:
+        r = c.post("/v1/chat/completions",
+                   json={"session_id": "sensH", "messages": [{"role": "user", "content": "朝レポート見せて"}]},
+                   headers={"X-Hisho-Source": "popover"})
+        assert r.status_code == 200
+    assert called.get("topic") == "health"     # 「レポート」→ health 群のみ一致
+    assert calls["tools_seen"][0] is None       # センサーターンはツールを一切渡さない
+    sys_msgs = [m for m in calls["messages_seen"][0] if m["role"] == "system"]
+    injected = [m for m in sys_msgs if m["content"].startswith(SENSOR_NOTE)]
+    assert len(injected) == 1                   # SENSOR_NOTE 前置の追加 system が 1 つ
+    assert "12:00 実測" in injected[0]["content"]
+
+
 # --- topic 推定 (単体マトリクス) ---
 
 def test_guess_topic_matrix():
@@ -107,6 +131,22 @@ def test_guess_topic_matrix():
     assert _guess_topic("調子どう?") == "all"                       # topic 語ゼロ → all
     assert _guess_topic("バックアップ用ディスクの容量は?") == "all"  # 2 群一致 → all
     assert _guess_topic("バックアップのマシンは稼働してる?") == "all"  # backup+machines → all
+    assert _guess_topic("朝レポート見せて") == "health"
+    assert _guess_topic("何か異常出てる?") == "health"
+    assert _guess_topic("警報鳴った?") == "health"
+    assert _guess_topic("バックアップの異常は?") == "all"   # backup+health 2群 → all
+
+
+def test_sensor_gate_covers_all_topic_pattern_words(tmp_path):
+    """_TOPIC_PATTERNS の各語は sensor_intent ゲートも必ず通ること。
+    パターンに足してゲートに足し忘れると、その語の質問が実測されず
+    一般論を答える (2026-07-07 の本番スモークで実際に発生した欠陥)。"""
+    store = Store(str(tmp_path / "t.db"))
+    app = create_app(store, load_config(), chat_fn=None)
+    for topic, rx in _TOPIC_PATTERNS:
+        for word in rx.pattern.split("|"):
+            assert app.state.sensor_intent.search(word), (
+                f"topic {topic!r} の語 {word!r} が sensor_intent ゲートに無い")
 
 
 # --- forget 先勝ち / specs フィルタ ---

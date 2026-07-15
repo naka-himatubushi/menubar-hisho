@@ -44,6 +44,7 @@ _TOPIC_PATTERNS = (
     ("backup", re.compile(r"バックアップ")),
     ("storage", re.compile(r"温度|容量|空き|ディスク")),
     ("machines", re.compile(r"稼働|生きて|落ちて|マシン|動い")),
+    ("health", re.compile(r"警報|異常|アラート|レポート|健康")),
 )
 
 
@@ -172,7 +173,8 @@ def create_app(
     # センサー系キーワードゲート。読み取り専用なので forget ほど厳密でなくてよいが、
     # forget ゲートが先勝ち (下の is_sensor 判定で is_forget を優先する)。
     app.state.sensor_intent = re.compile(
-        r"状態|状況|調子|バックアップ|温度|容量|空き|稼働|生きて|落ちて|ディスク|動い")
+        r"状態|状況|調子|バックアップ|温度|容量|空き|稼働|生きて|落ちて|ディスク|動い"
+        r"|マシン|警報|異常|アラート|レポート|健康")
     # アクション意図ゲート。優先順位: forget > 確認 (pending あり) > 提案 > sensor。
     # 提案の取り違えは確認フロー (「はい」以外で破棄) が無害化するので、緩くてよい。
     app.state.action_intent = re.compile(

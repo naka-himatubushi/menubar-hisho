@@ -7,7 +7,7 @@
 安全前提 (このモジュールを変更する時に必ず守ること):
 - 台帳の cmd は人間が手で編集する固定リストであり、LLM/HTTP 入力由来の文字列を
   一切混ぜない。だからこそ subprocess を shell=True で実行して良い。
-- topic は "backup" / "machines" / "storage" / "all" の enum だけを受け付ける。
+- topic は "backup" / "machines" / "storage" / "health" / "all" の enum だけを受け付ける。
   この文字列自体をコマンド組み立てに使うことは絶対にしない (辞書のキー参照のみ)。
 - 全て読み取り専用。書き込み・起動系のコマンドはここに登録しない。
 - 時間の上限は二層: コマンド 1 本 8 秒 (COMMAND_TIMEOUT) と topic 全体 12 秒
@@ -32,7 +32,7 @@ logger = logging.getLogger("hisho")
 
 COMMAND_TIMEOUT = 8    # 秒。台帳コマンド 1 本あたりの上限
 TOPIC_DEADLINE = 12    # 秒。topic 全体 (並列実行の待ち合わせ) の上限
-TOPICS = ("backup", "machines", "storage", "all")
+TOPICS = ("backup", "machines", "storage", "health", "all")
 
 BACKUP_LEDGER = "backup_targets.json"   # {"devices": [{"name":..., "cmd":...}, ...]}
 SENSOR_LEDGER = "sensor_targets.json"   # {"topics": {"machines": [...], "storage": [...]}}
@@ -144,14 +144,14 @@ def ledger_items(topic: str, app_support_dir: Path | str) -> tuple[list[dict], l
         else:
             items.extend(_valid_items(data.get("devices", []), missing))
 
-    if topic in ("machines", "storage", "all"):
+    if topic in ("machines", "storage", "health", "all"):
         data = _load_json(app_support_dir / SENSOR_LEDGER)
         if data is None:
             missing.append(f"{SENSOR_LEDGER} が見つかりません (台帳未設置)")
         elif not isinstance(data, dict) or not isinstance(data.get("topics", {}), dict):
             missing.append(f"台帳エントリの形式が不正: {repr(data)[:50]}")
         else:
-            names = ("machines", "storage") if topic == "all" else (topic,)
+            names = ("machines", "storage", "health") if topic == "all" else (topic,)
             topics_data = data.get("topics", {})
             for name in names:
                 items.extend(_valid_items(topics_data.get(name, []), missing))
@@ -183,7 +183,7 @@ def measure(topic: str, app_support_dir: Path | str,
             *, now: Callable[[], datetime] = datetime.now) -> str:
     """topic を検証し、台帳から読んだコマンドを並列実測して平文レポートを返す。
 
-    topic は "backup"|"machines"|"storage"|"all" のみ (それ以外は ValueError)。
+    topic は "backup"|"machines"|"storage"|"health"|"all" のみ (それ以外は ValueError)。
     台帳ファイルが無い場合も例外は投げず、分かるメッセージ入りのレポートを返す。
     """
     items, missing = ledger_items(topic, app_support_dir)

@@ -1,6 +1,11 @@
-# Hisho (JARVIS) — セッション引き継ぎ (2026-07-03 終業時点)
+# JARVIS (旧称 Hisho) — セッション引き継ぎ (2026-07-03 終業時点)
 
 > 次セッションで**そのまま再開**するための地図。詳細は spec / plans / メモリを参照。
+
+> **📛 2026-07-09 改名を正式化**: 本プロジェクトの正式名は **JARVIS** (メニューバー表示は既に JARVIS ブランド)。
+> 「Hisho」は旧称 — コード識別子 (`hisho_core`、`HISHO_MODEL`、`com.hisho.*` plist)・ディレクトリ名
+> `menubar-hisho` は稼働中のため据え置き。旧「JARVIS」(inbox 書庫基盤) は **Library-DB** に改名し
+> `~/sandbox/library-db/` へ移動、JARVIS 傘下の書庫機能という位置づけ (統合は同 repo の phase1 計画フェーズ⑤)。
 
 ## 現在地
 
@@ -30,7 +35,7 @@
 
 ## 次の候補 (未着手)
 
-- **Plan 4 スライス2: sensors** — 「今すぐバックアップ確認して/起動して」を JARVIS が実行 (tool-calling 基盤は完成済、あとは sensor ツールを `tools.REGISTRY` に足すだけ)
+- ~~Plan 4 スライス2: sensors~~ — **確認系は完成・配備済 (2026-07-07 main マージ)**: センサー質問 (バックアップ/状態/health) はサーバが実測→注入で回答する。実行系「起動して」は `feat/actions` branch に実装済み (197 tests green) だが**中止・封印** (実LLMスモーク未実施。再開時はレビュー→実スモーク (TM実起動+mini軽ジョブ) から)
 - 電源トグルの磨き: OFF 直後に一瞬緑に光る (healthz 3秒キャッシュ + ollama アンロード遅延)。probe cache TTL 短縮 or optimistic 表示で解消可
 - keep_alive 短縮 (`HISHO_KEEP_ALIVE`) でアイドル時もメモリ解放 / gemma4:12b の品質が不足なら 26b-a4b に戻す
 - `/history` 画面 / SMAppService (ログイン起動)
@@ -44,7 +49,8 @@ cd HishoKit && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift te
 # アプリ再ビルド (core を変えた時は build_core.sh 必須):
 scripts/build_core.sh && cd HishoApp && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodegen generate && cd .. \
   && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project HishoApp/HishoApp.xcodeproj -scheme HishoApp -configuration Debug -derivedDataPath build/derived build \
-  && open build/derived/Build/Products/Debug/Hisho.app
+  && scripts/deploy_app.sh  # /Applications/JARVIS.app へ配備+再起動 (build dir 直 open はしない)
+# 日常起動: Spotlight (⌘Space) →「jarvis」。実体は /Applications/JARVIS.app (配備を忘れると古いまま動く点に注意)
 # 実 LLM スモーク (別DB/別ポートで実データを汚さず):
 HISHO_DB=/tmp/smoke.db core/.venv/bin/python scripts/seed_memory.py "テスト事実..."
 tail -f /dev/null | HISHO_DB=/tmp/smoke.db HISHO_PORT=51199 core/.venv/bin/python -m hisho_core &

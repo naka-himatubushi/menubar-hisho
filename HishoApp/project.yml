@@ -23,6 +23,7 @@ targets:
       properties:
         CFBundleName: Hisho
         CFBundleDisplayName: JARVIS
+        CFBundleIconName: AppIcon     # Sources/Assets.xcassets の AppIcon (mustache、メニューバーと統一)
         LSUIElement: true            # Dock に出さないメニューバー常駐
         LSMinimumSystemVersion: "26.0"
         NSAppTransportSecurity:
@@ -31,6 +32,7 @@ targets:
       base:
         PRODUCT_NAME: Hisho
         PRODUCT_BUNDLE_IDENTIFIER: dev.hisho.app
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"      # ad-hoc 署名(自機ローカル、spec §5)
         ENABLE_HARDENED_RUNTIME: "NO"   # quote 必須 — YAML boolean 化を避ける

@@ -44,10 +44,11 @@ TOOL_SPECS = [{
             "properties": {
                 "topic": {
                     "type": "string",
-                    "enum": ["backup", "machines", "storage", "all"],
+                    "enum": ["backup", "machines", "storage", "health", "all"],
                     "description": (
                         "backup=バックアップ状況, machines=マシンの稼働状態, "
-                        "storage=ディスク容量/温度, all=まとめて全部"),
+                        "storage=ディスク容量/温度, health=mini の監視レポート/警報, "
+                        "all=まとめて全部"),
                 },
             },
             "required": ["topic"],
@@ -93,13 +94,13 @@ async def forget_memories(args, *, store, config, write_lock, embed=rag.embed, n
 
 
 async def check_status(args, *, store, config, write_lock=None):
-    """topic (backup/machines/storage/all) を実測し「HH:MM 実測」ヘッダつきレポートを返す。
+    """topic (backup/machines/storage/health/all) を実測し「HH:MM 実測」ヘッダつきレポートを返す。
     読み取り専用 — DB を書き換えない (write_lock は forget_memories と同じ呼び出し規約に
     合わせるため受け取るだけで使わない)。
     台帳の全項目が実測失敗の場合は store の最新 status チャンク(定期収集分)を
     「最終既知値」として追記する。戻り値: {topic, report}。"""
     topic = (args or {}).get("topic")
-    if topic not in ("backup", "machines", "storage", "all"):
+    if topic not in ("backup", "machines", "storage", "health", "all"):
         topic = "all"  # LLM が enum 外を出しても落とさず全体で拾う (安全側)
 
     app_support_dir = Path(config.db_path).expanduser().parent
