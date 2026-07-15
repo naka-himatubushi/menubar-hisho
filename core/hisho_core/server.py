@@ -257,7 +257,19 @@ def create_app(
                 else:
                     pending_discarded = True
 
+        # 実行待ちが無いのに確認語だけが来た。モデルに任せると実行を演技する
+        # (実LLMスモークで実測: 破棄直後の「はい」/新規会話初手の「はい」の両方) ため、
+        # ①墓標がある session (破棄/期限切れ/実行済みの直後) と ②履歴ゼロの初手 (下の
+        # popover 分岐で確定) はサーバ定型で止める。会話中の日常の「はい」は素通し。
+        confirm_shaped_no_pending = (
+            source == "popover" and not is_forget and pending_confirm is None
+            and actions_module.is_confirmation(user_message))
+        confirm_without_pending = (
+            confirm_shaped_no_pending
+            and app.state.pending_actions.recently_gone(session_id))
+
         is_action = (source == "popover" and not is_forget and pending_confirm is None
+                     and not confirm_without_pending
                      and bool(app.state.action_intent.search(user_message)))
         # forget / アクションのゲートが先勝ち。
         is_sensor = (source == "popover" and not is_forget and pending_confirm is None
@@ -293,16 +305,21 @@ def create_app(
                 sensor_report = "実測に失敗しました (内部エラー)"
 
         if source == "popover":
+            recent = await anyio.to_thread.run_sync(store.recent_turns, session_id, cfg.history_replay_turns)
+            recent_wo_last = recent[:-1] if recent and recent[-1]["role"] == "user" else recent
+            if confirm_shaped_no_pending and not recent_wo_last:
+                # 履歴ゼロの初手「はい」は会話として成立しない。実LLMスモークで
+                # RAG 記憶を根拠に実行を演技した (新規会話直後の誤爆経路) ため定型で止める。
+                confirm_without_pending = True
             # 忘却/センサー/アクション関連ターンは過去メモを注入しない:
             # - forget: 削除対象の事実が context に居るとモデルが tool を呼ばず
             #   「消しました」と幻覚する (実測: qwen3.6)
             # - sensor: 古い状態記憶が新しい実測と矛盾し、語りを汚染する (実測: gemma4:12b)
             # - action: 古い記憶が提案/実行報告を汚染するのを防ぐ (sensors と同じ思想)
-            skip_memories = is_forget or is_sensor or is_action or pending_confirm is not None
+            skip_memories = (is_forget or is_sensor or is_action
+                             or pending_confirm is not None or confirm_without_pending)
             memories = [] if skip_memories else await rag.retrieve(
                 store, user_message, config=cfg, exclude_session_id=session_id)
-            recent = await anyio.to_thread.run_sync(store.recent_turns, session_id, cfg.history_replay_turns)
-            recent_wo_last = recent[:-1] if recent and recent[-1]["role"] == "user" else recent
             messages = context.build_messages(recent_wo_last, user_message,
                                               cfg.num_ctx, cfg.response_reserve,
                                               memories=memories,
@@ -351,6 +368,15 @@ def create_app(
                     note = "[保留中の操作は取り消しました]\n\n"
                     acc.append(note)
                     yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": note}, finish_reason=None))
+                if confirm_without_pending:
+                    # 実行待ちなしの確認語はサーバ定型で完結 (モデルの実行演技を遮断)。
+                    line = actions_module.no_pending_text()
+                    acc.append(line)
+                    yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": line}, finish_reason=None))
+                    yield sse(chunk(cid, model, _now_ms() // 1000, delta={}, finish_reason="stop"))
+                    yield DONE
+                    status = "complete"
+                    return
                 if is_action:
                     # 提案ターン (安全不変条件 1): 初回ターンでは絶対に実行しない。
                     # モデルには ACTION_SPECS だけ公開し、content は流さず tool_call だけ拾う
@@ -512,7 +538,8 @@ def create_app(
                 # 将来の会話に注入されるのを防ぐ)。アクション関連往復 (提案/確認/破棄) も
                 # 同じ理由で索引しない。
                 skip_index = (tool_used_forget or is_sensor or is_action
-                              or pending_confirm is not None or pending_discarded)
+                              or pending_confirm is not None or pending_discarded
+                              or confirm_without_pending)
                 if source == "popover" and not skip_index:
                     asyncio.create_task(_index_pair())
 

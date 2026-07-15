@@ -310,6 +310,52 @@ def test_bare_backup_request_still_proposes(tmp_path):
     assert executed == []                               # 提案止まり、実行はしない
 
 
+# --- 実行待ちなし確認語のサーバ定型 (実LLMスモークで実行演技を実測 → 決定的遮断) ---
+
+def test_confirm_after_discard_gets_deterministic_note(tmp_path):
+    """破棄直後の「はい」はサーバ定型で止める。モデルは呼ばず、実行もしない。"""
+    app, calls, executed = _mk_app(tmp_path, _plain("晴れです"))
+    _post(app, "gone1", "バックアップ回しておいて")     # 提案 (elicitation 1回)
+    _post(app, "gone1", "今日の天気は？")               # 破棄 + 通常応答 (2回目)
+    n_before = calls["n"]
+    body = _post(app, "gone1", "はい")
+    assert "実行待ちの操作はありません" in body
+    assert calls["n"] == n_before                       # モデルを呼ばない
+    assert executed == []                               # 実行もしない
+    assert app.state.pending_actions.pop("gone1") is None
+
+
+def test_confirm_after_execution_gets_note_and_no_reexecution(tmp_path):
+    """実行済み直後の2発目「はい」は定型で止まり、再実行しない (pop 一回限りの UX 面)。"""
+    app, calls, executed = _mk_app(tmp_path, _plain())
+    _post(app, "gone2", "バックアップ回しておいて")
+    _post(app, "gone2", "はい")                         # 1回目 = 実行
+    assert len(executed) == 1
+    body = _post(app, "gone2", "はい")                  # 2回目
+    assert "実行待ちの操作はありません" in body
+    assert len(executed) == 1                           # 再実行なし
+
+
+def test_bare_yes_in_ongoing_conversation_is_normal_turn(tmp_path):
+    """会話中 (履歴あり・墓標なし) の「はい」は日常会話として素通し (定型を出さない)。"""
+    app, calls, executed = _mk_app(tmp_path, _plain("どうしました?"))
+    _post(app, "fresh1", "ちょっと相談いい？")          # 履歴を作る
+    n_before = calls["n"]
+    body = _post(app, "fresh1", "はい")
+    assert "実行待ちの操作はありません" not in body
+    assert calls["n"] == n_before + 1                   # 通常のモデル応答
+    assert executed == []
+
+
+def test_first_message_yes_gets_note(tmp_path):
+    """履歴ゼロの初手「はい」(新規会話直後の誤爆経路、実LLMで実行演技を実測) は定型で止める。"""
+    app, calls, executed = _mk_app(tmp_path, _plain())
+    body = _post(app, "fresh2", "はい")
+    assert "実行待ちの操作はありません" in body
+    assert calls["n"] == 0                              # モデルを呼ばない
+    assert executed == []
+
+
 # --- 非発火 / 非実行経路の証明 ---
 
 def test_unrelated_message_creates_no_pending(tmp_path):

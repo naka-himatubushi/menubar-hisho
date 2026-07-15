@@ -100,6 +100,9 @@ class PendingActions:
 
     def __init__(self, ttl: float = PENDING_TTL, clock: Callable[[], float] = time.monotonic):
         self._items: dict[str, tuple[float, PendingAction]] = {}
+        # 墓標: 直近まで pending が居た session。破棄/期限切れ/実行済み直後の
+        # 確認語 (「はい」) を日常会話の「はい」と区別するために使う。
+        self._gone: dict[str, float] = {}
         self.ttl = ttl
         self._clock = clock
 
@@ -112,10 +115,21 @@ class PendingActions:
         entry = self._items.pop(session_id, None)
         if entry is None:
             return None
+        self._gone[session_id] = self._clock()
         created, pa = entry
         if self._clock() - created > self.ttl:
             return None
         return pa
+
+    def recently_gone(self, session_id: str) -> bool:
+        """直近 (TTL 内) までこの session に pending が存在したか (墓標参照)。"""
+        t = self._gone.get(session_id)
+        if t is None:
+            return False
+        if self._clock() - t > self.ttl:
+            del self._gone[session_id]
+            return False
+        return True
 
 
 # 確認語: 短文の先頭一致のみ。「はいはい、話戻すけど」のような長文では成立しない。
@@ -219,6 +233,12 @@ def build_pending(action: str, args: dict, *, session_id: str,
 def proposal_text(pa: PendingAction) -> str:
     """提案ターンのサーバ定型文 (モデル生成に任せない)。実際に走る argv を可読形で提示。"""
     return f"実行内容: {pa.display}\n実行していい? (はい で実行、5分で無効)"
+
+
+def no_pending_text() -> str:
+    """確認語が来たが実行待ちが無い時のサーバ定型。モデルに任せると実行を
+    演技する (実LLMスモークで実測) ため、決定的に止める。"""
+    return "実行待ちの操作はありません (提案は5分で無効・一回限り)。必要ならもう一度依頼してください"
 
 
 def execution_report(pa: PendingAction, output: str,
