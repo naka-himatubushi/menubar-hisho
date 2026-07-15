@@ -35,7 +35,7 @@
 
 ## 次の候補 (未着手)
 
-- **Plan 4 スライス2: sensors** — 「今すぐバックアップ確認して/起動して」を JARVIS が実行 (tool-calling 基盤は完成済、あとは sensor ツールを `tools.REGISTRY` に足すだけ)
+- ~~Plan 4 スライス2: sensors~~ — **確認系は完成・配備済 (2026-07-07 main マージ)**: センサー質問 (バックアップ/状態/health) はサーバが実測→注入で回答する。実行系「起動して」は `feat/actions` branch に実装済み (197 tests green) だが**中止・封印** (実LLMスモーク未実施。再開時はレビュー→実スモーク (TM実起動+mini軽ジョブ) から)
 - 電源トグルの磨き: OFF 直後に一瞬緑に光る (healthz 3秒キャッシュ + ollama アンロード遅延)。probe cache TTL 短縮 or optimistic 表示で解消可
 - keep_alive 短縮 (`HISHO_KEEP_ALIVE`) でアイドル時もメモリ解放 / gemma4:12b の品質が不足なら 26b-a4b に戻す
 - `/history` 画面 / SMAppService (ログイン起動)
