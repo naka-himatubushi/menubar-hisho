@@ -49,7 +49,8 @@ cd HishoKit && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift te
 # アプリ再ビルド (core を変えた時は build_core.sh 必須):
 scripts/build_core.sh && cd HishoApp && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodegen generate && cd .. \
   && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project HishoApp/HishoApp.xcodeproj -scheme HishoApp -configuration Debug -derivedDataPath build/derived build \
-  && open build/derived/Build/Products/Debug/Hisho.app
+  && scripts/deploy_app.sh  # /Applications/JARVIS.app へ配備+再起動 (build dir 直 open はしない)
+# 日常起動: Spotlight (⌘Space) →「jarvis」。実体は /Applications/JARVIS.app (配備を忘れると古いまま動く点に注意)
 # 実 LLM スモーク (別DB/別ポートで実データを汚さず):
 HISHO_DB=/tmp/smoke.db core/.venv/bin/python scripts/seed_memory.py "テスト事実..."
 tail -f /dev/null | HISHO_DB=/tmp/smoke.db HISHO_PORT=51199 core/.venv/bin/python -m hisho_core &
