@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Mapping
 
 _DEFAULT_DB = str(Path.home() / "Library" / "Application Support" / "Hisho" / "secretary.db")
+# 書庫 (Library-DB) リポジトリの場所。library topic の `uv run jarvis find` はここを cwd に実行する
+_DEFAULT_LIBRARY_DIR = str(Path.home() / "sandbox" / "library-db")
 
 @dataclass(frozen=True)
 class Config:
@@ -20,6 +22,7 @@ class Config:
     embed_model: str   # 埋め込みモデル名(ollama)
     rag_enabled: bool  # False なら RAG 経路をスキップ
     rag_top_k: int     # 検索で返す上位件数
+    library_db_dir: str  # 書庫 (Library-DB) リポジトリの場所。書庫検索 (jarvis find) の cwd
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:
     e = os.environ if env is None else env
@@ -35,6 +38,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         embed_model=e.get("HISHO_EMBED_MODEL", "bge-m3"),
         rag_enabled=e.get("HISHO_RAG", "1") == "1",
         rag_top_k=int(e.get("HISHO_RAG_TOP_K", "5")),
+        library_db_dir=e.get("HISHO_LIBRARY_DIR", _DEFAULT_LIBRARY_DIR),
     )
 
 def ensure_db_dir(db_path: str) -> None:

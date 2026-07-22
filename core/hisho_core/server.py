@@ -40,11 +40,14 @@ def _forget_query(user_message: str) -> str:
 
 # topic 推定用の語群。ちょうど 1 群に一致した時だけその topic、
 # 0 群 or 複数群一致は曖昧とみなし all で全部測る (読み取り専用なので過剰測定が安全側)。
+# 注: library だけは all に含まれない (検索語が要る) ため、複数群一致で all に
+# 倒れた場合は書庫検索されない — それも「測りすぎ側」で安全。
 _TOPIC_PATTERNS = (
     ("backup", re.compile(r"バックアップ")),
     ("storage", re.compile(r"温度|容量|空き|ディスク")),
     ("machines", re.compile(r"稼働|生きて|落ちて|マシン|動い")),
     ("health", re.compile(r"警報|異常|アラート|レポート|健康")),
+    ("library", re.compile(r"書庫|どこ|探して|検索")),
 )
 
 
@@ -52,6 +55,40 @@ def _guess_topic(user_message: str) -> str:
     """決定的事前実測用に user 発話から check_status の topic を推定する。"""
     matched = [t for t, rx in _TOPIC_PATTERNS if rx.search(user_message)]
     return matched[0] if len(matched) == 1 else "all"
+
+
+# 書庫検索の検索語抽出用: 定型の尋ね句・場所の前置き・末尾の残骸を「削除リスト」として
+# 順に剥がす (LLM に抽出させない決定的方式。check_status をサーバ決定的に呼ぶのと同じ思想)。
+_LIBRARY_STRIP = (
+    # 場所の前置き: 「書庫で」「書庫の中から」「ライブラリに」
+    re.compile(r"(?:書庫|ライブラリ)(?:の中)?(?:で|から|に|を)?"),
+    # 尋ね句 (どこ系): 「のメモはどこ(にある|だっけ)?」ごと除去
+    re.compile(r"(?:の|を)?(?:メモ|ファイル|資料|文書|書類|データ)?(?:って)?(?:は|が|を)?"
+               r"(?:どこ|何処)(?:にある|にあった|にあります)?(?:か(?:な)?|だっけ|でしたっけ|ですか)?"),
+    # 尋ね句 (探して系)
+    re.compile(r"(?:の|を)?(?:メモ|ファイル|資料|文書|書類|データ)?(?:って)?(?:は|が|を)?"
+               r"(?:探して|捜して|さがして)(?:きて|みて|くれ|ください|ほしい|もらえる|おいて)?"),
+    # 尋ね句 (検索系)
+    re.compile(r"(?:の|を)?(?:メモ|ファイル|資料|文書|書類|データ)?(?:って)?(?:は|が|を)?"
+               r"検索(?:して|かけて)?(?:きて|みて|くれ|ください|おいて)?"),
+    # 末尾の残骸: 「ある?」「あったっけ」
+    re.compile(r"(?:ある|あった|あります)(?:か(?:な)?|っけ)?[\s?？!！。、]*$"),
+)
+# 削除後にこれ「だけ」残ったら検索語なしとみなす助詞 (「どこかにあるか探して」→「に」等の残骸対策)
+_LIBRARY_PARTICLE_ONLY = frozenset("にでをはがのもへとか")
+
+
+def extract_library_query(text: str) -> str:
+    """書庫検索の検索語をユーザー発話から決定的に抽出する (LLM を経ない)。
+    削除リスト regex で定型句を除去 → 前後の空白/記号を strip → 残りが検索語。
+    例: 「Buffaloのメモどこ」→「Buffalo」。空文字を返したら呼び出し側が聞き返す。"""
+    q = text or ""
+    for rx in _LIBRARY_STRIP:
+        q = rx.sub("", q)
+    q = q.strip(" \t\r\n　、。・?？!！「」『』")
+    if q in _LIBRARY_PARTICLE_ONLY:
+        return ""  # 助詞 1 文字だけの残骸は検索語にしない
+    return q
 
 
 # M2 ゲート: 忘却ターンでモデルに渡す tool specs は forget_memories だけに絞る。
@@ -172,9 +209,12 @@ def create_app(
     app.state.forget_intent = re.compile(r"忘れて|消して|消去|削除|覚えなくて")
     # センサー系キーワードゲート。読み取り専用なので forget ほど厳密でなくてよいが、
     # forget ゲートが先勝ち (下の is_sensor 判定で is_forget を優先する)。
+    # 3 行目は library (書庫検索) 語 — _TOPIC_PATTERNS の語は必ずここにも足す
+    # (ゲート ⊇ パターンの不変条件。test_sensor_gate_covers_all_topic_pattern_words が守る)。
     app.state.sensor_intent = re.compile(
         r"状態|状況|調子|バックアップ|温度|容量|空き|稼働|生きて|落ちて|ディスク|動い"
-        r"|マシン|警報|異常|アラート|レポート|健康")
+        r"|マシン|警報|異常|アラート|レポート|健康"
+        r"|書庫|どこ|探して|検索")
     # アクション意図ゲート。優先順位: forget > 確認 (pending あり) > 提案 > sensor。
     # 提案の取り違えは確認フロー (「はい」以外で破棄) が無害化するので、緩くてよい。
     # ただし bare「して」は「状態を確認して」(sensor 意図) まで提案化するので、
@@ -293,16 +333,26 @@ def create_app(
         # 応答生成の前にサーバが実測して結果を文脈注入する (モデルは要約のみ)。
         # 実LLMスモーク (gemma4:12b) で tool-calling 方式は「モデルの語りが実測より
         # 先に生成され、古い記憶で汚染された前説を語る」欠陥を確認したため一方通行にした。
+        # library topic は検索語もサーバが regex で決定的に抽出する (LLM に抽出させない)。
         sensor_report = None
+        library_ask = False   # 書庫検索の意図だが検索語が空 → LLM を経ない定型で聞き返す
         if is_sensor:
-            try:
-                res = await app.state.tool_registry["check_status"](
-                    {"topic": _guess_topic(user_message)},
-                    store=store, config=cfg, write_lock=app.state.write_lock)
-                sensor_report = (res or {}).get("report") or "実測に失敗しました (内部エラー)"
-            except Exception:
-                logger.warning("sensor pre-measurement failed", exc_info=True)
-                sensor_report = "実測に失敗しました (内部エラー)"
+            sensor_args = {"topic": _guess_topic(user_message)}
+            if sensor_args["topic"] == "library":
+                lib_query = extract_library_query(user_message)
+                if lib_query:
+                    sensor_args["query"] = lib_query
+                else:
+                    library_ask = True   # 実測 (検索) はしない。gen() の定型応答で完結
+            if not library_ask:
+                try:
+                    res = await app.state.tool_registry["check_status"](
+                        sensor_args,
+                        store=store, config=cfg, write_lock=app.state.write_lock)
+                    sensor_report = (res or {}).get("report") or "実測に失敗しました (内部エラー)"
+                except Exception:
+                    logger.warning("sensor pre-measurement failed", exc_info=True)
+                    sensor_report = "実測に失敗しました (内部エラー)"
 
         if source == "popover":
             recent = await anyio.to_thread.run_sync(store.recent_turns, session_id, cfg.history_replay_turns)
@@ -371,6 +421,16 @@ def create_app(
                 if confirm_without_pending:
                     # 実行待ちなしの確認語はサーバ定型で完結 (モデルの実行演技を遮断)。
                     line = actions_module.no_pending_text()
+                    acc.append(line)
+                    yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": line}, finish_reason=None))
+                    yield sse(chunk(cid, model, _now_ms() // 1000, delta={}, finish_reason="stop"))
+                    yield DONE
+                    status = "complete"
+                    return
+                if library_ask:
+                    # 書庫検索の意図だが検索語が抽出できなかった。モデルに任せると
+                    # 検索した体で語る恐れがあるため、LLM を経ないサーバ定型で聞き返す。
+                    line = "何を探すか一言で教えてください"
                     acc.append(line)
                     yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": line}, finish_reason=None))
                     yield sse(chunk(cid, model, _now_ms() // 1000, delta={}, finish_reason="stop"))
@@ -535,7 +595,8 @@ def create_app(
                         await anyio.to_thread.run_sync(store.touch_session, session_id, _now_ms())
                 # H1: 忘却を試みた往復は(成否問わず)索引しない。
                 # センサー往復も索引しない (レビュー#7: 揮発性の実測値が「既知の事実」として
-                # 将来の会話に注入されるのを防ぐ)。アクション関連往復 (提案/確認/破棄) も
+                # 将来の会話に注入されるのを防ぐ)。library の検索応答/聞き返しターンも
+                # is_sensor 経由で同様に除外。アクション関連往復 (提案/確認/破棄) も
                 # 同じ理由で索引しない。
                 skip_index = (tool_used_forget or is_sensor or is_action
                               or pending_confirm is not None or pending_discarded

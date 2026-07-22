@@ -7,8 +7,11 @@
 安全前提 (このモジュールを変更する時に必ず守ること):
 - 台帳の cmd は人間が手で編集する固定リストであり、LLM/HTTP 入力由来の文字列を
   一切混ぜない。だからこそ subprocess を shell=True で実行して良い。
-- topic は "backup" / "machines" / "storage" / "health" / "all" の enum だけを受け付ける。
-  この文字列自体をコマンド組み立てに使うことは絶対にしない (辞書のキー参照のみ)。
+- 例外は library topic (書庫検索): 検索語だけはユーザー発話由来なので、shell を
+  一切経由しない (library_search: shell=False の argv リスト直渡し・検索語は必ず 1 要素)。
+- topic は "backup" / "machines" / "storage" / "health" / "library" / "all" の enum
+  だけを受け付ける。この文字列自体をコマンド組み立てに使うことは絶対にしない
+  (辞書のキー参照のみ)。library は "all" に含めない (動的な検索語が無いと実行できないため)。
 - 全て読み取り専用。書き込み・起動系のコマンドはここに登録しない。
 - 時間の上限は二層: コマンド 1 本 8 秒 (COMMAND_TIMEOUT) と topic 全体 12 秒
   (TOPIC_DEADLINE)。どちらを超えても例外ではなく「実測失敗」の行になる。
@@ -32,10 +35,12 @@ logger = logging.getLogger("hisho")
 
 COMMAND_TIMEOUT = 8    # 秒。台帳コマンド 1 本あたりの上限
 TOPIC_DEADLINE = 12    # 秒。topic 全体 (並列実行の待ち合わせ) の上限
-TOPICS = ("backup", "machines", "storage", "health", "all")
+LIBRARY_TIMEOUT = 10   # 秒。書庫検索 (uv run jarvis find) 1 回の上限
+TOPICS = ("backup", "machines", "storage", "health", "library", "all")
 
 BACKUP_LEDGER = "backup_targets.json"   # {"devices": [{"name":..., "cmd":...}, ...]}
 SENSOR_LEDGER = "sensor_targets.json"   # {"topics": {"machines": [...], "storage": [...]}}
+LIBRARY_FIND_ARGV = ("uv", "run", "jarvis", "find")  # 書庫検索コマンド。検索語はこの後ろに 1 要素で付ける
 
 
 def _kill_group(proc) -> None:
@@ -98,6 +103,39 @@ def run_all(items: list[dict]) -> list[dict]:
     return results
 
 
+def library_search(query: str, library_dir: str | Path) -> dict:
+    """書庫 (Library-DB) を `uv run jarvis find <検索語>` で検索し {"name","output"} を返す。
+
+    台帳 cmd (shell=True) と決定的に違う安全前提: query はユーザー発話由来なので
+    shell を一切経由しない — argv リスト直渡し (shell=False)、検索語は必ず 1 要素
+    (コマンドとして解釈される経路 = shell injection 面を作らない)。
+    例外は投げない — timeout / uv 不在 / 書庫 dir 不在 / 非ゼロ exit は
+    「実測失敗: 理由」の行に丸める (呼び出し側は常に安全)。
+    0 件時は jarvis find 自身の出力 (「検索結果なし: ...」) をそのまま返す。"""
+    name = f"書庫検索: {query}"
+    argv = [*LIBRARY_FIND_ARGV, query]
+    try:
+        # start_new_session=True でプロセスグループを分離 → timeout 時に
+        # uv の子 (jarvis 本体) ごと殺せる (_run_one と同じ流儀)
+        proc = subprocess.Popen(argv, shell=False, cwd=str(library_dir),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
+        try:
+            stdout, stderr = proc.communicate(timeout=LIBRARY_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            proc.communicate()  # kill 後の回収 (ゾンビ化防止)
+            return {"name": name, "output": f"実測失敗: タイムアウト ({LIBRARY_TIMEOUT}秒)"}
+        out = (stdout or "").strip() or (stderr or "").strip()
+        if proc.returncode != 0:
+            # 検索コマンド自体の失敗 (traceback 等) を「0件」と混同させない
+            return {"name": name, "output": f"実測失敗 (exit {proc.returncode}): {out or '(出力なし)'}"}
+        return {"name": name, "output": out or "(出力なし)"}
+    except Exception as e:  # noqa: BLE001 — uv 不在/書庫 dir 不在等もセンサー同様に説明文へ丸める
+        logger.warning("library search failed: %s", name, exc_info=True)
+        return {"name": name, "output": f"実測失敗: {e}"}
+
+
 def _load_json(path: Path) -> object | None:
     """台帳 JSON を読む。無い/壊れている場合は None (例外を投げない)。"""
     try:
@@ -128,7 +166,9 @@ def _valid_items(raw: object, missing: list[str]) -> list[dict]:
 def ledger_items(topic: str, app_support_dir: Path | str) -> tuple[list[dict], list[str]]:
     """topic に対応する台帳からコマンド一覧を集める。
     戻り値 = (実行対象の items, 欠落・形式不正の説明メッセージ一覧)。
-    topic が enum 外なら ValueError (LLM 由来の文字列を弾く境界)。"""
+    topic が enum 外なら ValueError (LLM 由来の文字列を弾く境界)。
+    "library" は台帳を持たない (固定 cmd でなく動的な検索語が要る) ため常に ([], []) —
+    実行は check_status が library_search へ直接ルーティングする。"""
     if topic not in TOPICS:
         raise ValueError(f"unknown topic: {topic!r}")
     app_support_dir = Path(app_support_dir)

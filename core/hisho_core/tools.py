@@ -44,11 +44,16 @@ TOOL_SPECS = [{
             "properties": {
                 "topic": {
                     "type": "string",
-                    "enum": ["backup", "machines", "storage", "health", "all"],
+                    "enum": ["backup", "machines", "storage", "health", "library", "all"],
                     "description": (
                         "backup=バックアップ状況, machines=マシンの稼働状態, "
                         "storage=ディスク容量/温度, health=mini の監視レポート/警報, "
-                        "all=まとめて全部"),
+                        "library=書庫 (Library-DB) のファイル検索, "
+                        "all=まとめて全部 (library は検索語が要るため含まない)"),
+                },
+                "query": {
+                    "type": "string",
+                    "description": "topic=library の時だけ使う書庫の検索語",
                 },
             },
             "required": ["topic"],
@@ -94,14 +99,31 @@ async def forget_memories(args, *, store, config, write_lock, embed=rag.embed, n
 
 
 async def check_status(args, *, store, config, write_lock=None):
-    """topic (backup/machines/storage/health/all) を実測し「HH:MM 実測」ヘッダつきレポートを返す。
-    読み取り専用 — DB を書き換えない (write_lock は forget_memories と同じ呼び出し規約に
-    合わせるため受け取るだけで使わない)。
+    """topic (backup/machines/storage/health/library/all) を実測し「HH:MM 実測」ヘッダつき
+    レポートを返す。読み取り専用 — DB を書き換えない (write_lock は forget_memories と
+    同じ呼び出し規約に合わせるため受け取るだけで使わない)。
     台帳の全項目が実測失敗の場合は store の最新 status チャンク(定期収集分)を
-    「最終既知値」として追記する。戻り値: {topic, report}。"""
+    「最終既知値」として追記する。戻り値: {topic, report}。
+    topic=library は台帳でなく args["query"] (server の決定的抽出由来) で書庫を検索する。"""
     topic = (args or {}).get("topic")
-    if topic not in ("backup", "machines", "storage", "health", "all"):
+    if topic not in ("backup", "machines", "storage", "health", "library", "all"):
         topic = "all"  # LLM が enum 外を出しても落とさず全体で拾う (安全側)
+
+    if topic == "library":
+        # 書庫検索: 台帳の固定 cmd と違い動的な検索語が要るため専用経路。
+        # query は server.extract_library_query (regex 決定的抽出) 由来で、LLM には作らせない。
+        # 検索結果は揮発値で status チャンクと無関係なので、最終既知値フォールバックは付けない。
+        query = (args or {}).get("query", "")
+        query = query.strip() if isinstance(query, str) else ""
+        header = sensors.now_header()
+        if not query:
+            # server 側で定型応答に落ちるため通常ここには来ない (防御的な第二層)
+            return {"topic": "library",
+                    "report": f"{header}\n\n書庫検索: 検索語が空のため実行しませんでした"}
+        item = await anyio.to_thread.run_sync(
+            sensors.library_search, query, config.library_db_dir)
+        return {"topic": "library",
+                "report": f"{header}\n\n{sensors.format_report([item], [])}"}
 
     app_support_dir = Path(config.db_path).expanduser().parent
     items, missing = await anyio.to_thread.run_sync(sensors.ledger_items, topic, app_support_dir)
