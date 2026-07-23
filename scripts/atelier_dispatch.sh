@@ -16,7 +16,7 @@ REPO_KEY="${1:?usage: atelier_dispatch.sh <repo-key> <task-text>}"
 TASK_TEXT="${2:?task-text required}"
 
 TARGETS="$HOME/Library/Application Support/Hisho/atelier_targets.json"
-OUT_DIR="$HOME/AtelierOut"
+OUT_DIR="$HOME/Jarvis/AtelierOut"
 TS="$(date +%Y%m%d-%H%M%S)"
 MODEL="laguna-bench:s21-q4"
 STUDIO="http://naka-studio:11434"
