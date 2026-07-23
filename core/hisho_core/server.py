@@ -226,7 +226,8 @@ def create_app(
     app.state.action_intent = re.compile(
         r"(バックアップ|TM).*(回|取っ|開始|走|実行)"
         r"|(バックアップ|TM)(を|も)?(して|しといて|しておいて|お願い)"
-        r"|((スタジオ|studio|ミニ|mini).*(投げ|回し|任せ|やらせ|やって))",
+        r"|((スタジオ|studio|ミニ|mini).*(投げ|回し|任せ|やらせ|やって))"
+        rf"|(?:{actions_module.ATELIER_GATE_PATTERN})",
         re.IGNORECASE)
     # 確認待ちの操作 (session 束縛・TTL 5分・一回限り)。再起動で消える = 安全側。
     app.state.pending_actions = actions_module.PendingActions()
@@ -331,6 +332,13 @@ def create_app(
             except Exception:
                 logger.warning("action execution failed", exc_info=True)
                 out = "実行失敗: 内部エラー"
+            if pending_confirm.action == "atelier":
+                # 工房は「投げるだけ」: merge/検収はしない事実をモデルに誤解させないため、
+                # 実行結果テキスト自体に明記する (sensor/action と同じ「サーバが事実を渡し、
+                # モデルは要約のみ」の思想。PERSONA 側は変更しない — ここで渡す文字列だけで
+                # execution_report → ACTION_NOTE 経由で完結させる)。
+                out = (f"{out}\n(納品時に macOS 通知が届きます。merge・検収はしていません。"
+                      f"検収は人間が行います)")
             action_report = actions_module.execution_report(pending_confirm, out)
 
         # 決定的事前実測 (安全性の要 #4): センサー系の質問はモデルに任せず、
@@ -442,6 +450,43 @@ def create_app(
                     status = "complete"
                     return
                 if is_action:
+                    if actions_module.is_atelier_intent(user_message):
+                        # 工房発注: repo-key/task-text はサーバが完全決定的に抽出する。
+                        # LLM には一切頼らない (repo を許可リスト外に広げさせないための設計上の
+                        # 要請 — start_backup/fleet_submit のモデル隠し呼び出しとは別経路。
+                        # library_ask と同型: 曖昧なら提案せず定型で聞き返す)。
+                        line = None
+                        repo_key = None
+                        task_text = None
+                        try:
+                            repo_key = actions_module.resolve_atelier_repo(user_message, app_support_dir)
+                            if repo_key is None:
+                                names = actions_module.atelier_repo_keys(app_support_dir)
+                                line = f"どのリポジトリですか? ({' / '.join(names)})"
+                            else:
+                                task_text = actions_module.extract_atelier_task(user_message, repo_key)
+                                if not task_text:
+                                    line = "工房に何を発注するか、内容を一言で教えてください"
+                        except actions_module.ActionError as e:
+                            line = str(e)
+                        if line is None:
+                            try:
+                                pa = actions_module.build_pending(
+                                    "atelier", {"repo": repo_key, "task": task_text},
+                                    session_id=session_id, app_support_dir=app_support_dir,
+                                    user_message=user_message)
+                            except Exception:
+                                logger.warning("atelier pending build failed", exc_info=True)
+                                line = "操作を組み立てられませんでした (内部エラー)"
+                            else:
+                                app.state.pending_actions.put(session_id, pa)
+                                line = actions_module.proposal_text(pa)
+                        acc.append(line)
+                        yield sse(chunk(cid, model, _now_ms() // 1000, delta={"content": line}, finish_reason=None))
+                        yield sse(chunk(cid, model, _now_ms() // 1000, delta={}, finish_reason="stop"))
+                        yield DONE
+                        status = "complete"
+                        return
                     # 提案ターン (安全不変条件 1): 初回ターンでは絶対に実行しない。
                     # モデルには ACTION_SPECS だけ公開し、content は流さず tool_call だけ拾う
                     # (引数抽出をモデルに手伝わせるが、応答文はサーバ定型に固定する)。

@@ -110,7 +110,9 @@ def test_proposal_turn_publishes_only_action_specs(tmp_path):
     _post(app, "prop2", "バックアップ回しておいて")
     tools = calls["tools_seen"][0]
     assert tools is not None
-    assert sorted(t["function"]["name"] for t in tools) == ["fleet_submit", "start_backup"]
+    # atelier も ACTION_SPECS には載る (登録のみ。ACTION_NAMES に無いので elicitation
+    # 経由では PendingAction を作れない — test_atelier.py で別途検証)。
+    assert sorted(t["function"]["name"] for t in tools) == ["atelier", "fleet_submit", "start_backup"]
 
 
 def test_model_tool_call_becomes_pending_not_execution(tmp_path):

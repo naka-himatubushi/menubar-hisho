@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 役割: 毎朝 9:00 に morning_briefing.sh を起動する launchd 定義。
+     インストール (中沢さん承認後):
+       cp config/com.jarvis.morning-briefing.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.jarvis.morning-briefing.plist
+     解除: launchctl unload ~/Library/LaunchAgents/com.jarvis.morning-briefing.plist -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.morning-briefing</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/nakazawa_pro/sandbox/menubar-hisho/scripts/morning_briefing.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/jarvis-morning-briefing.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/jarvis-morning-briefing.log</string>
+</dict>
+</plist>
