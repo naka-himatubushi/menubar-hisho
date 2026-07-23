@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 役割: 毎朝 9:00 に morning_briefing.sh を起動する launchd 定義。
-     インストール (中沢さん承認後):
+     インストール (利用者の承認後):
        cp config/com.jarvis.morning-briefing.plist ~/Library/LaunchAgents/
        launchctl load ~/Library/LaunchAgents/com.jarvis.morning-briefing.plist
      解除: launchctl unload ~/Library/LaunchAgents/com.jarvis.morning-briefing.plist -->

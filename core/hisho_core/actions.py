@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shlex
 import subprocess
@@ -44,12 +45,15 @@ BACKUP_MACHINES = ("macbook", "studio", "mini")
 FLEET_MACHINES = ("studio", "mini")
 EXEC_TIMEOUT = 30      # 秒。アクション実行の上限 (fleet_submit/atelier は投入だけなので数秒)
 PENDING_TTL = 300.0    # 秒。提案から確認までの猶予 (5分)
-# 工房 dispatch script の場所。config.py の _BRIEFING_EXAMPLE と同じ「core/hisho_core から見た
-# repo root 相対」方式。パッケージ配布物に scripts/ が同梱されない構成もあり得るが、
+# 工房 dispatch script の場所。.app bundle には scripts/ が同梱されない (__file__ は
+# site-packages 配下になり、相対で辿っても scripts/ に届かない) ため、安定実体である
+# repo working copy を home 固定の既定で指す。HISHO_ATELIER_SCRIPT で上書き可。
 # 無くても build_pending はここでは気にしない (execute() が FileNotFoundError を
 # 説明文に変換してくれる — 安全側。actions.py 冒頭の shell=False 方針と同じ理由で
 # パスは argv の 1 要素として渡すだけで、シェル経由では組み立てない)。
-ATELIER_DISPATCH_SCRIPT = Path(__file__).resolve().parent.parent.parent / "scripts" / "atelier_dispatch.sh"
+ATELIER_DISPATCH_SCRIPT = Path(os.environ.get(
+    "HISHO_ATELIER_SCRIPT",
+    str(Path.home() / "sandbox" / "menubar-hisho" / "scripts" / "atelier_dispatch.sh")))
 
 # LLM がモデル提案ターンで見る tool specs。実行には絶対つながらない
 # (server は tool_call を pending に変換するだけ。tools.REGISTRY にも載せない)。
