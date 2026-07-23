@@ -9,9 +9,11 @@
   一切混ぜない。だからこそ subprocess を shell=True で実行して良い。
 - 例外は library topic (書庫検索): 検索語だけはユーザー発話由来なので、shell を
   一切経由しない (library_search: shell=False の argv リスト直渡し・検索語は必ず 1 要素)。
-- topic は "backup" / "machines" / "storage" / "health" / "library" / "all" の enum
-  だけを受け付ける。この文字列自体をコマンド組み立てに使うことは絶対にしない
+- topic は "backup" / "machines" / "storage" / "health" / "library" / "all" / "briefing" の
+  enum だけを受け付ける。この文字列自体をコマンド組み立てに使うことは絶対にしない
   (辞書のキー参照のみ)。library は "all" に含めない (動的な検索語が無いと実行できないため)。
+  briefing も "all" に含めない (all を包含する上位 topic であり、期限セクションの合成は
+  tools.check_status 側が担う)。
 - 全て読み取り専用。書き込み・起動系のコマンドはここに登録しない。
 - 時間の上限は二層: コマンド 1 本 8 秒 (COMMAND_TIMEOUT) と topic 全体 12 秒
   (TOPIC_DEADLINE)。どちらを超えても例外ではなく「実測失敗」の行になる。
@@ -27,7 +29,7 @@ import os
 import signal
 import subprocess
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable
 
@@ -36,7 +38,8 @@ logger = logging.getLogger("hisho")
 COMMAND_TIMEOUT = 8    # 秒。台帳コマンド 1 本あたりの上限
 TOPIC_DEADLINE = 12    # 秒。topic 全体 (並列実行の待ち合わせ) の上限
 LIBRARY_TIMEOUT = 10   # 秒。書庫検索 (uv run jarvis find) 1 回の上限
-TOPICS = ("backup", "machines", "storage", "health", "library", "all")
+TOPICS = ("backup", "machines", "storage", "health", "library", "all", "briefing")
+BRIEFING_NO_DEADLINES = "期限リストなし"  # briefing_targets.json 欠損/壊れ/空リスト時の1行
 
 BACKUP_LEDGER = "backup_targets.json"   # {"devices": [{"name":..., "cmd":...}, ...]}
 SENSOR_LEDGER = "sensor_targets.json"   # {"topics": {"machines": [...], "storage": [...]}}
@@ -167,8 +170,9 @@ def ledger_items(topic: str, app_support_dir: Path | str) -> tuple[list[dict], l
     """topic に対応する台帳からコマンド一覧を集める。
     戻り値 = (実行対象の items, 欠落・形式不正の説明メッセージ一覧)。
     topic が enum 外なら ValueError (LLM 由来の文字列を弾く境界)。
-    "library" は台帳を持たない (固定 cmd でなく動的な検索語が要る) ため常に ([], []) —
-    実行は check_status が library_search へ直接ルーティングする。"""
+    "library" と "briefing" は台帳を持たない (library は固定 cmd でなく動的な検索語が要る、
+    briefing は all 実測+期限セクションの合成であり自分専用の台帳が無い) ため常に ([], []) —
+    実行は check_status が library_search / briefing 合成ロジックへ直接ルーティングする。"""
     if topic not in TOPICS:
         raise ValueError(f"unknown topic: {topic!r}")
     app_support_dir = Path(app_support_dir)
@@ -233,3 +237,56 @@ def measure(topic: str, app_support_dir: Path | str,
         return f"{header}\n\n{body}"
     results = run_all(items)
     return f"{header}\n\n{format_report(results, missing)}"
+
+
+def load_briefing_targets(path: Path | str) -> list[dict]:
+    """briefing_targets.json ({"deadlines": [{"label","date"}, ...]}) を読み込み、
+    deadlines エントリのリストを返す。ファイル無し/壊れた JSON/ルート形式不正は
+    すべて空リストに丸める (例外を投げない)。個々のエントリも label/date が
+    文字列でなければ黙ってスキップする (_valid_items と同じ、人間の編集ミスへの第二層防御)。"""
+    data = _load_json(Path(path))
+    if not isinstance(data, dict):
+        return []
+    raw = data.get("deadlines")
+    if not isinstance(raw, list):
+        return []
+    good: list[dict] = []
+    for d in raw:
+        if isinstance(d, dict) and isinstance(d.get("label"), str) and isinstance(d.get("date"), str):
+            good.append(d)
+        else:
+            logger.warning("briefing_targets.json のエントリ形式が不正: %s", repr(d)[:80])
+    return good
+
+
+def _deadline_line(label: str, date_str: str, today: date) -> str | None:
+    """1件分の期限行を作る。「YYYY-MM-DD」形式でパースできない date は None を返し、
+    呼び出し側でその1件だけスキップする(台帳の形式不正エントリと同じ「黙って落とす」防御)。
+    未来=⏰あとN日、当日=⏰本日、超過=⚠️超過N日 の3パターン。"""
+    try:
+        target = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        logger.warning("briefing_targets.json の日付形式が不正: %r", date_str)
+        return None
+    days = (target - today).days
+    if days > 0:
+        return f"⏰ {label}: あと{days}日 ({date_str})"
+    if days == 0:
+        return f"⏰ {label}: 本日 ({date_str})"
+    return f"⚠️ {label}: 超過{-days}日 ({date_str})"
+
+
+def deadlines_report(path: Path | str, *, now: Callable[[], datetime] = datetime.now) -> str:
+    """briefing_targets.json から期限セクションの平文を組み立てる(ヘッダは含まない)。
+
+    欠損/壊れ JSON/空リスト/全エントリ形式不正は "期限リストなし" 1行に丸める
+    (例外を投げない — briefing レポート全体を巻き込んで殺さないため)。
+    残日数計算は now 注入で決定的にテストできる (LLM に計算させない。now_header と同じ思想)。
+    """
+    today = now().date()
+    lines: list[str] = []
+    for d in load_briefing_targets(path):
+        line = _deadline_line(d["label"], d["date"], today)
+        if line:
+            lines.append(line)
+    return "\n".join(lines) if lines else BRIEFING_NO_DEADLINES

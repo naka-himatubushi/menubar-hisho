@@ -44,12 +44,13 @@ TOOL_SPECS = [{
             "properties": {
                 "topic": {
                     "type": "string",
-                    "enum": ["backup", "machines", "storage", "health", "library", "all"],
+                    "enum": ["backup", "machines", "storage", "health", "library", "all", "briefing"],
                     "description": (
                         "backup=バックアップ状況, machines=マシンの稼働状態, "
                         "storage=ディスク容量/温度, health=mini の監視レポート/警報, "
                         "library=書庫 (Library-DB) のファイル検索, "
-                        "all=まとめて全部 (library は検索語が要るため含まない)"),
+                        "all=まとめて全部 (library は検索語が要るため含まない), "
+                        "briefing=朝のブリーフィング (all 相当の実測 + 期限リストの残日数)"),
                 },
                 "query": {
                     "type": "string",
@@ -98,15 +99,41 @@ async def forget_memories(args, *, store, config, write_lock, embed=rag.embed, n
     }
 
 
+async def _measure_ledger_topic(topic: str, *, store, config) -> str:
+    """backup/machines/storage/health/all の台帳実測本体を組み立てる
+    (「HH:MM 実測」ヘッダ + 整形済みレポート文字列。dict 化は呼び出し側の責務)。
+    全項目実測失敗なら store の最新 status チャンクを「最終既知値」として追記する。
+    briefing はこれを topic="all" で呼び、期限セクションを追記するだけで済ませる
+    (briefing が all を包含する側 — all 側には briefing 用の分岐を足さない)。"""
+    app_support_dir = Path(config.db_path).expanduser().parent
+    items, missing = await anyio.to_thread.run_sync(sensors.ledger_items, topic, app_support_dir)
+    header = sensors.now_header()
+
+    if not items:
+        body = "\n".join(missing) if missing else "台帳にコマンドが登録されていません"
+        return f"{header}\n\n{body}"
+
+    results = await anyio.to_thread.run_sync(sensors.run_all, items)
+    report = f"{header}\n\n{sensors.format_report(results, missing)}"
+
+    if sensors.all_failed(results):
+        latest = await anyio.to_thread.run_sync(store.latest_status_chunk)
+        if latest:
+            report = f"{report}\n\n実測できなかったため最終既知値 (定期収集分):\n{latest}"
+
+    return report
+
+
 async def check_status(args, *, store, config, write_lock=None):
-    """topic (backup/machines/storage/health/library/all) を実測し「HH:MM 実測」ヘッダつき
-    レポートを返す。読み取り専用 — DB を書き換えない (write_lock は forget_memories と
-    同じ呼び出し規約に合わせるため受け取るだけで使わない)。
-    台帳の全項目が実測失敗の場合は store の最新 status チャンク(定期収集分)を
-    「最終既知値」として追記する。戻り値: {topic, report}。
-    topic=library は台帳でなく args["query"] (server の決定的抽出由来) で書庫を検索する。"""
+    """topic (backup/machines/storage/health/library/all/briefing) を実測し
+    「HH:MM 実測」ヘッダつきレポートを返す。読み取り専用 — DB を書き換えない
+    (write_lock は forget_memories と同じ呼び出し規約に合わせるため受け取るだけで使わない)。
+    戻り値: {topic, report}。
+    topic=library は台帳でなく args["query"] (server の決定的抽出由来) で書庫を検索する。
+    topic=briefing は all 相当の実測結果 + 期限セクション (briefing_targets.json の残日数、
+    サーバ側 Python で決定的に計算。LLM には計算させない) を1レポートに合成する。"""
     topic = (args or {}).get("topic")
-    if topic not in ("backup", "machines", "storage", "health", "library", "all"):
+    if topic not in ("backup", "machines", "storage", "health", "library", "all", "briefing"):
         topic = "all"  # LLM が enum 外を出しても落とさず全体で拾う (安全側)
 
     if topic == "library":
@@ -125,22 +152,15 @@ async def check_status(args, *, store, config, write_lock=None):
         return {"topic": "library",
                 "report": f"{header}\n\n{sensors.format_report([item], [])}"}
 
-    app_support_dir = Path(config.db_path).expanduser().parent
-    items, missing = await anyio.to_thread.run_sync(sensors.ledger_items, topic, app_support_dir)
-    header = sensors.now_header()
+    if topic == "briefing":
+        # 朝ブリーフィング: all 相当の実測 + 期限セクション。期限リストの欠損/壊れは
+        # deadlines_report 側が「期限リストなし」に丸めるのでここでは例外を気にしない。
+        sensor_body = await _measure_ledger_topic("all", store=store, config=config)
+        deadlines = await anyio.to_thread.run_sync(
+            sensors.deadlines_report, config.briefing_targets_path)
+        return {"topic": "briefing", "report": f"{sensor_body}\n\n{deadlines}"}
 
-    if not items:
-        body = "\n".join(missing) if missing else "台帳にコマンドが登録されていません"
-        return {"topic": topic, "report": f"{header}\n\n{body}"}
-
-    results = await anyio.to_thread.run_sync(sensors.run_all, items)
-    report = f"{header}\n\n{sensors.format_report(results, missing)}"
-
-    if sensors.all_failed(results):
-        latest = await anyio.to_thread.run_sync(store.latest_status_chunk)
-        if latest:
-            report = f"{report}\n\n実測できなかったため最終既知値 (定期収集分):\n{latest}"
-
+    report = await _measure_ledger_topic(topic, store=store, config=config)
     return {"topic": topic, "report": report}
 
 

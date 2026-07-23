@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 import uvicorn
-from .config import load_config, ensure_db_dir
+from .config import load_config, ensure_db_dir, ensure_briefing_targets
 from .store import Store
 from .server import create_app
 from . import lifecycle
@@ -36,6 +36,10 @@ def main():
     """エントリポイント: config 読込 → サーバー構築 → stdin 死監視開始 → core.json 書込 → uvicorn 起動。"""
     config = load_config()
     app, sock, port = build_server_and_port(config)
+    # briefing_targets.json の初回自動生成。build_server_and_port はテストからも直接
+    # 呼ばれる(test_build_server_and_port)ため、実ファイルシステムに触るこの呼び出しは
+    # main() 側に置く(テストが実ユーザーの Application Support を汚さないようにする)。
+    ensure_briefing_targets(config.briefing_targets_path)
     lifecycle.start_stdin_death_watcher()  # 親(Swift)死で自死
     lifecycle.write_core_json(lifecycle.core_json_path(config.db_path), os.getpid(), port)
     uvicorn.run(app, fd=sock.fileno(), workers=1, log_level="info")

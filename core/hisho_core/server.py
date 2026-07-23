@@ -40,14 +40,16 @@ def _forget_query(user_message: str) -> str:
 
 # topic 推定用の語群。ちょうど 1 群に一致した時だけその topic、
 # 0 群 or 複数群一致は曖昧とみなし all で全部測る (読み取り専用なので過剰測定が安全側)。
-# 注: library だけは all に含まれない (検索語が要る) ため、複数群一致で all に
-# 倒れた場合は書庫検索されない — それも「測りすぎ側」で安全。
+# 注: library と briefing は all に含まれない (library は検索語が要る、briefing は
+# all を包含する上位 topic のため) ため、複数群一致で all に倒れた場合は書庫検索されず
+# 期限セクションも付かない — それも「測りすぎ側」で安全。
 _TOPIC_PATTERNS = (
     ("backup", re.compile(r"バックアップ")),
     ("storage", re.compile(r"温度|容量|空き|ディスク")),
     ("machines", re.compile(r"稼働|生きて|落ちて|マシン|動い")),
     ("health", re.compile(r"警報|異常|アラート|レポート|健康")),
     ("library", re.compile(r"書庫|どこ|探して|検索")),
+    ("briefing", re.compile(r"おはよう|朝の報告|ブリーフィング|今日の状況")),
 )
 
 
@@ -209,12 +211,14 @@ def create_app(
     app.state.forget_intent = re.compile(r"忘れて|消して|消去|削除|覚えなくて")
     # センサー系キーワードゲート。読み取り専用なので forget ほど厳密でなくてよいが、
     # forget ゲートが先勝ち (下の is_sensor 判定で is_forget を優先する)。
-    # 3 行目は library (書庫検索) 語 — _TOPIC_PATTERNS の語は必ずここにも足す
+    # 3 行目は library (書庫検索) 語、4 行目は briefing (朝ブリーフィング) 語 —
+    # _TOPIC_PATTERNS の語は必ずここにも足す
     # (ゲート ⊇ パターンの不変条件。test_sensor_gate_covers_all_topic_pattern_words が守る)。
     app.state.sensor_intent = re.compile(
         r"状態|状況|調子|バックアップ|温度|容量|空き|稼働|生きて|落ちて|ディスク|動い"
         r"|マシン|警報|異常|アラート|レポート|健康"
-        r"|書庫|どこ|探して|検索")
+        r"|書庫|どこ|探して|検索"
+        r"|おはよう|朝の報告|ブリーフィング|今日の状況")
     # アクション意図ゲート。優先順位: forget > 確認 (pending あり) > 提案 > sensor。
     # 提案の取り違えは確認フロー (「はい」以外で破棄) が無害化するので、緩くてよい。
     # ただし bare「して」は「状態を確認して」(sensor 意図) まで提案化するので、
